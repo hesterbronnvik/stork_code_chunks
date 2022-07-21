@@ -26,15 +26,20 @@ locations <- lapply(studies, function(x){
   print(paste0("Study ", x, "."))
   # get the names of the animals to download
   birds <- getMovebankAnimals(study =  x, login = loginStored)
+  # remove birds that had no data 
   bird_names <- unique(birds$individual_id[which(birds$number_of_events > 0)])
   
   individual_locs <- lapply(bird_names, function(y){
     print(paste0("Individual ", y, "."))
     # get the data themselves
     locations1 <- getMovebankLocationData(study = x, animalName =  y, sensorID = "GPS", login = loginStored) %>% 
+      # make the move object manipulable
       as.data.frame(row.names = NULL) %>% 
+      # remove missing locations
       drop_na(location.long) %>% 
+      # create a column to ignore year
       mutate(datestamp = timestamp) %>% 
+      # pare the data down to reduce burden and remove uselss columns
       dplyr::select("timestamp", "location.long", "location.lat", "individual.id", "individual.local.identifier", 
                     "ground.speed", "heading", "height.above.ellipsoid", "study.name", "datestamp") %>% 
       # add columns by which to categorize the data
@@ -53,37 +58,19 @@ locations <- lapply(studies, function(x){
     # reset the year
     year(locations1$datestamp) <- 1995
     # because the idea is to capture the locations of all birds during the migration, 
-    # include data from birds not migrating, but during others' migrations:
+    # include data from birds not migrating, but during others' migrations (arbitrary months based on a histogram):
     locations_thin <- locations1 %>% 
       filter(month(datestamp) %in% c(3,4,5,8,9))
     
     return(locations_thin)
   }) %>% reduce(rbind)
   
+  # save the data for each study
   saveRDS(individual_locs, file = paste0("C:/Users/heste/Desktop/HB_storks/study_locations/", x, ".rds"))
   return(individual_locs)
 }) %>% reduce(rbind)
 # the run time:
 Sys.time() - start_time
-
-define### ignore the year and subset by calendar day
-
-# take only migratory days
-# migration_threshold <- 100*1000 # 100 km
-# locations <- locations %>% 
-#   # add columns by which to categorize the data
-#   group_by(individual.id, date(timestamp)) %>% 
-#   # the Haversine distance between first and last locations of the day
-#   mutate(daily_dist = distHaversine(c(head(location.long,1), head(location.lat, 1)), c(tail(location.long,1), tail(location.lat, 1))),
-#          # the rhumbline bearing of between first and last locations of the day
-#          daily_direction = bearingRhumb(c(head(location.long,1), head(location.lat, 1)), c(tail(location.long,1), tail(location.lat, 1))),
-#          # finally a binary category denoting migratory or not, it is unnecessary but simplifies code
-#          migratory = ifelse(daily_dist > migration_threshold, 1, 0),
-#          compass_direction = ifelse(daily_direction > 90 & daily_direction < 270, "southward", "northward"), 
-#          phase = ifelse(migratory == 1 & compass_direction == "southward", "autumn_migration", 
-#                         # migrating north 
-#                         ifelse(migratory == 1 & compass_direction == "northward", "spring_migration", NA))) %>% 
-#   ungroup()
 
 # a rough idea of the months in which migration happens from movements of 47 birds on both (EW) routes
 # hist(month(locations$datestamp[locations$migratory == 1])) # 3,4,5,8,9
