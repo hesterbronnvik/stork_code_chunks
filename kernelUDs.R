@@ -18,7 +18,7 @@ setwd("C:/Users/heste/Desktop/HB_storks")
 load("loginStored.rdata")
 
 # collect the names of the stork studies to use
-studies <- c(21231406, 1176017658, 173641633)#24442409, 212096177, 76367850, 
+studies <- c(173641633)#24442409, 212096177, 76367850, 21231406,1176017658,  
 
 start_time <- Sys.time()
 locations <- lapply(studies, function(x){
@@ -28,6 +28,9 @@ locations <- lapply(studies, function(x){
   birds <- getMovebankAnimals(study =  x, login = loginStored)
   # remove birds that had no data 
   bird_names <- unique(birds$individual_id[which(birds$number_of_events > 0)])
+  
+  # remove the names of birds that have already been downloaded
+  #bird_names <- bird_names[!bird_names %in% sub(".rds", "", list.files("C:/Users/heste/Desktop/HB_storks/ind_locations/"))]
   
   individual_locs <- lapply(bird_names, function(y){
     print(paste0("Individual ", y, "."))
@@ -62,6 +65,9 @@ locations <- lapply(studies, function(x){
     locations_thin <- locations1 %>% 
       filter(month(datestamp) %in% c(3,4,5,8,9))
     
+    # if internet is unstable, saving per individual may be necessary
+    #saveRDS(locations_thin, file = paste0("C:/Users/heste/Desktop/HB_storks/ind_locations/", y, ".rds"))
+    
     return(locations_thin)
   }) %>% reduce(rbind)
   
@@ -75,7 +81,52 @@ Sys.time() - start_time
 # a rough idea of the months in which migration happens from movements of 47 birds on both (EW) routes
 # hist(month(locations$datestamp[locations$migratory == 1])) # 3,4,5,8,9
 
+# if internet is unstable, read in each saved individual file and bind
+# ind_locations <- list.files("C:/Users/heste/Desktop/HB_storks/ind_locations/", full.names = T)
+# 
+# locations <- lapply(ind_locations, function(x){
+#   ind <- readRDS(x)
+# }) %>% reduce(rbind) # 46 million rows of data, a lengthy process
+
+# study_locations <- list.files("C:/Users/heste/Desktop/HB_storks/study_locations/", full.names = T)
+# 
+# locations2 <- lapply(study_locations, function(x){
+#    ind <- readRDS(x)
+# }) %>% reduce(rbind) # 7.3 million rows of data
+
+# locations_full <- rbind(locations, locations2)
+
+# split the full data set up by month. They are all in the same year now, 
+# so this provides 5 files just to reduce time reading in the 53 million rows of data. 
+# If the whole workflow is done at once, this is unnecessary.
+lapply(unique(month(locations_full$datestamp)), function(x){
+  mo_locs <- locations_full %>% 
+    dplyr::filter(month(locations_full$datestamp) == x)
+  
+  save(mo_locs, file = paste0("C:/Users/heste/Desktop/HB_storks/months_6_studies/month_", x, "_locations.RData"))
+})
+
+# if the data were split, read them in and thin them
+months_files <- list.files("C:/Users/heste/Desktop/HB_storks/months_6_studies/", full.names = T)
+
+locations_thin <- lapply(months_files, function(x){
+  
+  load(x)
+  
+  # thin the data to 5 minute intervals
+  locations_thin <- mo_locs %>% 
+    group_by(individual.id) %>% 
+    mutate(dt_5min = round_date(timestamp, "5 minutes")) %>% 
+    group_by(dt_5min) %>% 
+    slice(1) %>%  
+    ungroup()
+  
+  return(locations_thin)
+  
+}) %>% reduce(rbind)
+
 ### build a kernel estimate for each subset
+
 
 study1kernels <- lapply(unique(date(locations_thin$datestamp)), function(f){
   print(f)
