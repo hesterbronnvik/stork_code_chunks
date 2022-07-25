@@ -18,7 +18,7 @@ setwd("C:/Users/heste/Desktop/HB_storks")
 load("loginStored.rdata")
 
 # collect the names of the stork studies to use
-studies <- c(173641633)#24442409, 212096177, 76367850, 21231406,1176017658,  
+studies <- c(24442409, 212096177, 76367850, 21231406,1176017658, 173641633)
 
 start_time <- Sys.time()
 locations <- lapply(studies, function(x){
@@ -127,8 +127,8 @@ locations_thin <- lapply(months_files, function(x){
 
 ### build a kernel estimate for each subset
 
-
-study1kernels <- lapply(unique(date(locations_thin$datestamp)), function(f){
+## adehabitat library
+kernels <- lapply(unique(date(locations_thin$datestamp)), function(f){
   print(f)
   data_sp <- locations_thin %>%  # store the data, then create a spatial object for plotting
     dplyr::filter(date(datestamp) == f) %>% 
@@ -136,19 +136,132 @@ study1kernels <- lapply(unique(date(locations_thin$datestamp)), function(f){
   
   coordinates(data_sp) <- ~ location.long + location.lat
   
-  #H.lscv <- Hlscv(x = data_sp)
+  #kern <- Hpi(x = coordinates(data_sp))
   
-  kern <- kernelUD(data_sp, h = "LSCV")
+  kern <- kernelUD(data_sp, h = "href")# the ad hoc method is used for the smoothing parameter
+  
+  # fhat <- kde(x = data_sp, H = get("kern"), compute.cont = T)
+  # 
+  # png(filename= paste0("C:/Users/heste/Desktop/HB_storks/gif/", f, ".png"))
+  # plot(fhat, xlab = "Longitude", ylab = "Latitude", xlim=c(-15,10), ylim = c(25, 50))
+  # dev.off()
+  
+  return(kern)
+})
+image(getvolumeUD(kernels[[1]]), col = rev(viridis(15)))
+
+image(kernels[[1]])
+plot(getverticeshr(kernels[[1]], 95), add = TRUE)
+
+plot(getverticeshr(kernels[[1]]))
+data_sp <- locations_thin[which(date(locations_thin$datestamp) == unique(date(locations_thin$datestamp))[1]),]
+coordinates(data_sp) <- ~ location.long + location.lat
+points(data_sp, cex = 1, pch = 16)
+
+# ud1 <- as(kernels[[1]], "SpatialPolygonsDataFrame")
+# leaflet() %>% addTiles() %>% addPolygons(data = ud1)
+
+
+
+ud <- lapply(kernels, function(x){
+  getverticeshr(x, 95)
+  }) #%>% reduce(rbind)
+
+sapply(1:length(ud), function(i) {
+  
+  #row.names(ud[[i]]) <- unique(date(locations_thin$datestamp))[i]
+  row.names(ud[[i]]@data) <<- unique(date(locations_thin$datestamp))[i]
+  
+}) 
+
+sdf_poly <- Reduce(rbind, ud)
+
+df <- fortify(sdf_poly)
+g <- ggplot(df, aes(x = long, y = lat, fill = id, group = group)) +
+  geom_polygon(alpha = .4) +
+  coord_equal() +
+  theme_void()+
+  theme(legend.position="none", axis.text = element_text(color = "black"))
+g
+g + facet_wrap(~id)
+
+mv <- df %>% 
+  group_by(id) %>% 
+  mutate(timing = 1:153)
+
+mv <- data.frame()
+
+for (i in 1:length(unique(df$id))) {
+  x <- df[df$id == unique(df$id)[i],]
+  x$date <- unique(date(locations_thin$datestamp))[i]
+  mv <- rbind(mv, x)
+}
+
+
+ggplot(mv, aes(x = long, y = lat, fill = id, group = group)) + 
+  geom_polygon(alpha = 0.4) +
+  labs(x = " Longitude", y = "Latitude", title = "Date: {previous_state}") +
+  transition_states(states = group)+
+  theme_classic() +
+  theme(legend.position="none", axis.text = element_text(color = "black"))
+
+countries <- c("Germany", "Switzerland", "France", "Spain", "Morocco", "Italy", "Portugal", "Belgium", "Netherlands",
+               "Tunisia", "Algeria", "Liechtenstein", "Luxembourg", "Mauritania", "Mali", "Libya", "Austria", "Slovenia",
+               "Czech Republic", "Western Sahara", "Senegal", "Gambia", "Guinea Bissau", "Guinea", "Mali", "Sierra Leone",
+               "Liberia", "Cote d'Ivoire")
+
+ggplot(mv, aes(x = long, y = lat, fill = id, group = group)) + 
+  borders(regions = countries, fill = "gray80") +
+  geom_polygon(alpha = 0.4) +
+  labs(x = " Longitude", y = "Latitude") +
+  transition_time(time = date)+
+  theme_classic() +
+  theme(legend.position="none", axis.text = element_text(color = "black"))
+
+ggplot(mv, aes(x = long, y = lat, fill = id, group = group)) + 
+  geom_polygon(alpha = 0.4) +
+  labs(x = " Longitude", y = "Latitude") +
+  transition_reveal(along = date)+
+  theme_classic() +
+  theme(legend.position="none", axis.text = element_text(color = "black"))
+
+library(ggplot2)
+library(ggthemes)
+library(raster)
+library(rgeos)
+
+gbr <- getData('SRTM', lon=0, lat=35)
+#gbr <- gSimplify(gbr, 0.01)
+
+gbr_map <- fortify(gbr)
+
+## KS library
+kernels <- lapply(unique(date(locations_thin$datestamp)), function(f){
+  print(f)
+  data_sp <- locations_thin %>%  # store the data, then create a spatial object for plotting
+    dplyr::filter(date(datestamp) == f) %>% 
+    dplyr::select(location.long, location.lat)
+  
+  #coordinates(data_sp) <- ~ location.long + location.lat
+  
+  kern <- Hpi(x = coordinates(data_sp))
+  
+  #kern <- kernelUD(data_sp, h = "href")
+  
+  fhat <- kde(x = data_sp, H = get("kern"), compute.cont = T)
+  
+  png(filename= paste0("C:/Users/heste/Desktop/HB_storks/gif/", f, ".png"))
+  plot(fhat, xlab = "Longitude", ylab = "Latitude", xlim=c(-15,10), ylim = c(25, 50))
+  dev.off()
+  
   return(kern)
 })
 
-plot(getverticeshr(study1kernels[[1]]))
-points(locations_thin, pch = 16, cex = .75)
 
 ### save
 
 
-dummydata <- data.frame(x = c(10, 5, 10), y = c("Wind support", "Uplift", "Uplift:Migration year"), sh = c(2, 2, 2), sl = c(-2, -2, -2))
+dummydata <- data.frame(x = c(10, 6, 10), y = c("Wind support", "Uplift", "Uplift:Migration year"), sh = c(2, 2, 2), sl = c(-2, -2, -2))
 dummydata$y <- factor(dummydata$y, levels = c("Uplift:Migration year", "Uplift", "Wind support"))
 
 ggplot(dummydata, aes(x = x, y= y)) + 
@@ -161,9 +274,20 @@ ggplot(dummydata, aes(x = x, y= y)) +
   theme(legend.position="none", 
         axis.text = element_text(color = "black"), 
         text = element_text(size = 450),
-        axis.line=element_line(size=4, color = "black"),
+        axis.line=element_line(size=8, color = "black"),
         axis.ticks.length=unit(8, "cm"),
         axis.ticks = element_blank(),
         axis.text.x.bottom = element_blank())
 
+library(magick)
+imgs <- list.files("C:/Users/heste/Desktop/HB_storks/gif/", full.names = TRUE)
+img_list <- lapply(imgs, image_read)
 
+## join the images together
+img_joined <- image_join(img_list)
+
+## animate at 2 frames per second
+img_animated <- image_animate(img_joined, fps = 10)
+
+image_write(image = img_animated,
+            path = "C:/Users/heste/Desktop/HB_storks/kernels.gif")
