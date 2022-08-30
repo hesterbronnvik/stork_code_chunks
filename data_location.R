@@ -6,6 +6,10 @@ library(move)
 library(amt)
 library(lubridate)
 library(sf)
+library(raster)
+library(rgeos)
+library(rasterVis)
+library(countrycode)
 library(tidyverse)
 
 # set wd and load login data
@@ -60,7 +64,59 @@ NCEP.loxodrome.na <- function (lat1, lat2, lon1, lon2) {
   return(head)
 }
   
+# lapply(studies, function(x){
+#   cols <- getMovebankSensorsAttributes(x, login = loginStored)
+#   print(x)
+#   print("height_above_msl"  %in% cols$short_name)
+# })
+
+## download DEM data for the countries along the flyway 
+countries <- c("Niger", "Denmark", "Western Sahara", "Germany", "Spain", "Morocco", "Portugal", "Belgium", "Netherlands",
+               "Algeria", "Liechtenstein", "Luxembourg", "Mauritania", "Mali", "Senegal", 
+               "Gambia", "Ivory Coast", "Ghana", "Burkina Faso", "Switzerland", "France", "Benin") %>% 
+  countrycode(origin = 'country.name', destination = 'iso3c')
+
+shp <- shapefile("C:/Users/heste/Desktop/HB_storks/srtm/tiles.shp")
+plot(shp)
+
+#Get country geometry first
+outlines <- lapply(countries, function(x){
+  print(x)
+  temp <- getData("GADM", country = x, level=0)
+  crs(temp) <- crs(shp)
   
+  return(temp)
+}) %>% reduce(rbind)
+
+
+#Intersect country geometry and tile grid
+# intersects <- gIntersects(outlines, shp, byid=T, prepared=F)
+# tiles <- shp[intersects[,1],]
+tiles <- raster::intersect(outlines, shp)
+
+srtm_list  <- list()
+for(i in 1:length(tiles)) {
+  lon <- extent(tiles[i,])[1]  + (extent(tiles[i,])[2] - extent(tiles[i,])[1]) / 2
+  lat <- extent(tiles[i,])[3]  + (extent(tiles[i,])[4] - extent(tiles[i,])[3]) / 2
+  
+  tile <- getData('SRTM', lon=lon, lat=lat)
+  
+  srtm_list[[i]] <- tile
+}
+
+#Mosaic tiles
+srtm_list$fun <- mean 
+#srtm_mosaic   <- do.call(mosaic, srtm_list)
+srtm_mosaic <- raster::raster("srtm_mosaic")
+
+
+#Crop tiles to country borders
+srtm_crop     <- mask(srtm_mosaic, outlines)
+
+#Plot
+p <- levelplot(srtm_mosaic)
+p + latticeExtra::layer(sp.lines(outlines, lwd=0.8, col='darkgray'))
+
 tracks <- lapply(studies, function(x){
   
   # get the names of the animals to download
@@ -107,7 +163,7 @@ tracks <- lapply(studies, function(x){
     
   }) %>% reduce(rbind)
   
-  save(locations, file = paste0("thinned_migration_multi-year/", x, ".Rdata"))
+  #save(locations, file = paste0("thinned_migration_multi-year/", x, ".Rdata"))
   
   print(paste0("Downloaded data from study ", which(studies == x), ", ID ", x, "."))
   
@@ -120,11 +176,12 @@ track_files <- list.files("thinned_migration_multi-year/", full.names = T)
 
 tracks <- lapply(track_files, function(x){
   load(x)
+  print(as.character(x))
   if("acceleration.raw.x" %in% names(locations)){
     locations <- locations %>% dplyr::select(-"acceleration.raw.x", -"acceleration.raw.y", -"acceleration.raw.z", -
                                                "barometric.height", -"battery.charge.percent", -"battery.charging.current", -
-                                               "external.temperature", -"gps.hdop", -"gps.time.to.fix", -
-                                               "height.above.msl", -"light.level", -"ornitela.transmission.protocol", -
+                                               "external.temperature", -"gps.hdop", -"gps.time.to.fix",  -"height.above.msl", -
+                                               "light.level", -"ornitela.transmission.protocol", -
                                                "tag.voltage")
   }
   if("manually.marked.valid" %in% names(locations)){
@@ -162,7 +219,7 @@ sorting <- tracks  %>%
 # add those numbers onto the full data set
 tracks <- tracks %>% 
   group_by(individual.id, yr_phase) %>% 
-  mutate(migration = sorting$migration[sorting$yr_phase == yr_phase & sorting$individual.id == individual.id]) %>% 
+  mutate(migration = sorting$migration[sorting$yr_phase == unique(yr_phase) & sorting$individual.id == unique(individual.id)]) %>% 
   ungroup()
 
 # plot the tracks
@@ -173,7 +230,7 @@ countries <- c("Germany", "Switzerland", "France", "Spain", "Morocco", "Italy", 
 
 
 ggplot(tracks, aes(x = location.long, y = location.lat, fill = phase, color = phase)) + 
-  borders("world", fill = "gray50") +
+  borders(region = countries, fill = "gray80") +
   geom_point() +
   #geom_polygon(alpha = 0.4) +
   labs(x = " Longitude", y = "Latitude") +
@@ -206,9 +263,9 @@ burst_tracks <- lapply(unique(tracks$track_id), function(x){
     # make a track object
     make_track(location.long, location.lat, timestamp, track_id) %>% 
     # add the times between reads
-    mutate(gap = difftime(lead(t_), t_), 
-           change = ifelse(round(gap) < 45, 0, 1)) %>% 
-    # group the days and the gaps
+    mutate(height.above.ellipsoid = tracks$height.above.ellipsoid[tracks$track_id == unique(track_id)],
+           gap = difftime(lead(t_), t_), 
+           change = ifelse(round(gap) < 45, 0, 1)) %>%
     group_by(date(t_), change) %>% 
     # add a unique ID to each group
     mutate(burst_ = cur_group_id()) %>% 
@@ -232,10 +289,10 @@ burst_tracks <- lapply(unique(tracks$track_id), function(x){
       steps_by_burst(keep_cols = "start") %>% 
       random_steps(n_control = 100) %>%
       rowwise() %>%
-      mutate(heading = NCEP.loxodrome.na(y1_, y2_, x1_, x2_), 
-             timestamp = paste0(t1_, "000"))  %>%
-      rename(location.long = x2_, 
-             location.lat = y2_)
+      mutate(bearing = NCEP.loxodrome.na(y1_, y2_, x1_, x2_), 
+             timestamp = paste0(t1_, ".000"))  %>%
+      rename("location-long" = x2_, 
+             "location-lat" = y2_)
   } else {ind <- data.frame()}
   
   return(ind)
@@ -244,20 +301,60 @@ burst_tracks <- lapply(unique(tracks$track_id), function(x){
 
 length(unique(gsub("\\_.*", "", burst_tracks$track_id)))
 
-burst_tracks %>% 
-  filter(case_ == 1) %>%
+burst_tracks[burst_tracks$case_ == T, ] %>%
   ggplot(aes(sl_, fill = factor(track_id))) + ggtitle("Observed") +
   geom_density(alpha = 0.4) +
   labs(x = "Step length (degrees)", y = "Density") +
   theme_classic() +
   theme(legend.position="none", axis.text = element_text(color = "black"))
-burst_tracks %>% 
-  filter(case_ == 1) %>%
+burst_tracks[burst_tracks$case_ == T, ] %>%
   ggplot(aes(ta_*180/pi, fill = factor(track_id))) + ggtitle("Observed") +
   geom_density(alpha = 0.4) +
   labs(x = "Turning angle (degrees)", y = "Density") +
   theme_classic() +
   theme(legend.position="none", axis.text = element_text(color = "black"))
+
+
+# centroid_spdf <- SpatialPointsDataFrame(
+#   tracks[,c(4,5)], proj4string=srtm@crs, tracks)
+# 
+# cs <- centroid_spdf[centroid_spdf$location.long > -10 & centroid_spdf$location.long < -5 & centroid_spdf$location.lat > 20 & centroid_spdf$location.lat < 25,]
+# cent_max <- raster::extract(srtm,             # raster layer
+#                             cs,               # SPDF with centroids for buffer
+#                             buffer = 0.25,    # buffer size, units depend on CRS
+#                             fun=mean,         # what value to extract
+#                             df=TRUE)          # return a data frame?
+# unique(cent_max[,2])
+# 
+# library(geodata)
+# srtm <- elevation_3s(lon=6, lat=23,  path=tempdir())
+# 
+# cent_max <- terra::extract(srtm, tracks[,c(5,4)], fun=NULL, method="simple")
+
+## extract the orthometric height for the given locations
+
+srtm_mosaic <- raster::raster("srtm_mosaic.grd")
+
+centroid_spdf <- SpatialPointsDataFrame(burst_tracks[,c(2,4)], proj4string= srtm_mosaic@crs, burst_tracks)
+start_time <- Sys.time()
+cent_max <- raster::extract(srtm_mosaic,      # raster layer
+                            centroid_spdf,    # SPDF with centroids for buffer
+                            #buffer = 0.25,    # buffer size, units depend on CRS
+                            method = "simple",# whether to return one value or interpolated values
+                            #fun=mean,         # what value to extract
+                            df=TRUE)          # return a data frame?
+Sys.time()-start_time
+
+burst_tracks$srtm <- cent_max$layer
+burst_tracks$"height-above-msl" <- burst_tracks$height.above.ellipsoid - burst_tracks$srtm
+burst_tracks$divider <- c(rep("A", times = 1000000), rep("B", times = 1000000), rep("C", times = 1000000), rep("D", times = 1000000), rep("E", times = 1000000), rep("F", times = (nrow(burst_tracks)-5000000)))
+#list2env(split(burst_tracks, burst_tracks$divider), .GlobalEnv)
+
+for(i in unique(burst_tracks$divider)){
+  tracks <- burst_tracks[burst_tracks$divider == i, ]
+  write.csv(tracks, file = paste0("C:/Users/heste/Desktop/HB_storks/tracks/burst_tracks_", i,"_", Sys.Date(), ".csv"))
+}
+
 
 fit_distr <- function(x, dist_name, na.rm = TRUE) {
   
