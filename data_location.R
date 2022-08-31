@@ -289,8 +289,9 @@ burst_tracks <- lapply(unique(tracks$track_id), function(x){
       steps_by_burst(keep_cols = "start") %>% 
       random_steps(n_control = 100) %>%
       rowwise() %>%
-      mutate(bearing = NCEP.loxodrome.na(y1_, y2_, x1_, x2_), 
+      mutate(direction = NCEP.loxodrome.na(y1_, y2_, x1_, x2_), 
              timestamp = paste0(t1_, ".000"))  %>%
+      ungroup() %>% 
       rename("location-long" = x2_, 
              "location-lat" = y2_)
   } else {ind <- data.frame()}
@@ -301,18 +302,19 @@ burst_tracks <- lapply(unique(tracks$track_id), function(x){
 
 length(unique(gsub("\\_.*", "", burst_tracks$track_id)))
 
-burst_tracks[burst_tracks$case_ == T, ] %>%
-  ggplot(aes(sl_, fill = factor(track_id))) + ggtitle("Observed") +
+ggplot(burst_tracks, aes(sl_, fill = factor(track_id)))+
   geom_density(alpha = 0.4) +
   labs(x = "Step length (degrees)", y = "Density") +
   theme_classic() +
-  theme(legend.position="none", axis.text = element_text(color = "black"))
-burst_tracks[burst_tracks$case_ == T, ] %>%
-  ggplot(aes(ta_*180/pi, fill = factor(track_id))) + ggtitle("Observed") +
+  theme(legend.position="none", axis.text = element_text(color = "black")) +
+  facet_wrap(~case_)
+
+ggplot(burst_tracks, aes(ta_*180/pi, fill = factor(track_id)))+
   geom_density(alpha = 0.4) +
   labs(x = "Turning angle (degrees)", y = "Density") +
   theme_classic() +
-  theme(legend.position="none", axis.text = element_text(color = "black"))
+  theme(legend.position="none", axis.text = element_text(color = "black")) +
+  facet_wrap(~case_)
 
 
 # centroid_spdf <- SpatialPointsDataFrame(
@@ -333,27 +335,37 @@ burst_tracks[burst_tracks$case_ == T, ] %>%
 
 ## extract the orthometric height for the given locations
 
-srtm_mosaic <- raster::raster("srtm_mosaic.grd")
-
-centroid_spdf <- SpatialPointsDataFrame(burst_tracks[,c(2,4)], proj4string= srtm_mosaic@crs, burst_tracks)
-start_time <- Sys.time()
-cent_max <- raster::extract(srtm_mosaic,      # raster layer
-                            centroid_spdf,    # SPDF with centroids for buffer
-                            #buffer = 0.25,    # buffer size, units depend on CRS
-                            method = "simple",# whether to return one value or interpolated values
-                            #fun=mean,         # what value to extract
-                            df=TRUE)          # return a data frame?
-Sys.time()-start_time
-
-burst_tracks$srtm <- cent_max$layer
-burst_tracks$"height-above-msl" <- burst_tracks$height.above.ellipsoid - burst_tracks$srtm
-burst_tracks$divider <- c(rep("A", times = 1000000), rep("B", times = 1000000), rep("C", times = 1000000), rep("D", times = 1000000), rep("E", times = 1000000), rep("F", times = (nrow(burst_tracks)-5000000)))
+# srtm_mosaic <- raster::raster("srtm_mosaic.grd")
+# 
+# centroid_spdf <- SpatialPointsDataFrame(burst_tracks[,c(2,4)], proj4string= srtm_mosaic@crs, burst_tracks)
+# 
+# cent_max <- raster::extract(srtm_mosaic,       # raster layer
+#                             centroid_spdf,     # SPDF with centroids for buffer
+#                             buffer = 0.25,    # buffer size, units depend on CRS
+#                             method = "simple", # whether to return one value or interpolated values
+#                             fun=mean,         # what value to extract
+#                             df=TRUE)           # return a data frame?
+# 
+# burst_tracks$srtm <- cent_max$layer
+# burst_tracks$"height-above-msl" <- burst_tracks$height.above.ellipsoid - burst_tracks$srtm
+burst_tracks$divider <- c(rep("A", times = 1000000), rep("B", times = 1000000), rep("C", times = 1000000), rep("D", times = 1000000), rep("E", times = 1000000), rep("F", times = nrow(burst_tracks)-5000000))
+burst_tracks$divider <- c(rep("A", times = 584921), rep("B", times = 584921), rep("C", times = 584921), rep("D", times = 584921), rep("E", times = 584921), 
+                          rep("F", times = 584921), rep("G", times = 584921), rep("H", times = 584921), rep("I", times = 584921), rep("J", times = 584924))
 #list2env(split(burst_tracks, burst_tracks$divider), .GlobalEnv)
 
-for(i in unique(burst_tracks$divider)){
-  tracks <- burst_tracks[burst_tracks$divider == i, ]
-  write.csv(tracks, file = paste0("C:/Users/heste/Desktop/HB_storks/tracks/burst_tracks_", i,"_", Sys.Date(), ".csv"))
-}
+invisible(lapply(unique(burst_tracks$divider), function(x){
+  df <- burst_tracks %>% 
+    dplyr::filter(divider == x)# %>% 
+    #dplyr::select(2, 4, 5, 6, 7, 8, 13, 14, 15, 16, 19)
+  
+  write.csv(df, file = paste0("C:/Users/heste/Desktop/HB_storks/tracks/burst_tracks_", x, ".csv"))
+}))
+
+
+check2 <- burst_tracks  %>% 
+     select(2,4, 7, timestamp)%>% 
+     filter(track_id == "1176031140_2020_autumn_migration")
+write.csv(check2, file = "check2.csv")
 
 
 fit_distr <- function(x, dist_name, na.rm = TRUE) {
