@@ -19,7 +19,6 @@ load("loginStored.rdata")
 # collect the names of the stork studies to use
 studies <- c(24442409, 212096177, 76367850, 21231406, 1176017658, 173641633)
 
-# load required functions
 #import required functions
 NCEP.loxodrome.na <- function (lat1, lat2, lon1, lon2) {
   deg2rad <- pi/180
@@ -117,17 +116,80 @@ srtm_crop     <- mask(srtm_mosaic, outlines)
 p <- levelplot(srtm_mosaic)
 p + latticeExtra::layer(sp.lines(outlines, lwd=0.8, col='darkgray'))
 
+
+## determine the identities of the nestling birds
+nestlings <- lapply(studies, function(x){
+  
+  print(x)
+  
+  birds <- getMovebankReferenceTable(study = x, login = loginStored) %>% 
+    filter(sensor_type_id == 653) %>% 
+    filter(!is.na(animal_id))
+  
+  if(length(unique(birds$animal_id[grep("juv|chick|young", birds$animal_comments, fixed = F)])) > 0){
+    nesties1 <- unique(birds$animal_id[grep("juv|chick|young", birds$animal_comments, fixed = F)])
+  } else {nesties1 <- NA}
+  
+  if("animal_life_stage" %in% colnames(birds) & length(unique(birds$animal_id[which(birds$animal_life_stage == "nestling")])) > 0){
+    nesties2 <- unique(birds$animal_id[which(birds$animal_life_stage == "nestling")])
+  } else {nesties2 <-  NA}
+  
+  nesties <- na.omit(unique(c(unique(nesties1), unique(nesties2))))
+  
+  return(nesties)
+  
+}) %>% unlist()
+
+## determine approximate nest locations for each individual (adapted from Flack dBBMMs)
+nest_sites <- lapply(studies, function(x){
+  
+  # get the names of the animals to download
+  days <- getMovebankAnimals(study =  x, login = loginStored) %>% 
+    # remove errors and duplicated information
+    filter(timestamp_start != "" & sensor_type_id == 653 & individual_id %in% nestlings) %>% 
+    # reduce the variables
+    dplyr::select(individual_id, timestamp_start) %>% 
+    # calculate the time each bird transmitted for
+    mutate(three_days = as.POSIXct(timestamp_start, tz = "UTC") + (60*60*24*3))   
+  
+  nests <- lapply(unique(days$individual_id), function(y){
+    print(which(unique(days$individual_id) == y))
+    three_days <- getMovebankData(study = x, animalName =  y, sensorID = "GPS", login = loginStored,
+                                     timestamp_start = as.POSIXct(days$timestamp_start[which(days$individual_id == y,)], tz = "UTC"),
+                                     timestamp_end = days$three_days[which(days$individual_id == y)],
+                                  removeDuplicatedTimestamps =T)
+    
+    nest <- geomean(as.matrix(coordinates(three_days)))
+    
+    nest_loc <- data.frame(individual.id = y, location.long = nest[,1], location.lat = nest[,2])
+    
+    return(nest_loc)
+    
+  }) %>% reduce(rbind)
+  
+  return(nests)
+    
+}) %>% reduce(rbind)
+
+
+
+## find the initiation of migration in each year for each individual
+#starts <- lapply(list, function(X){})
+
+
+
+
 tracks <- lapply(studies, function(x){
   
   # get the names of the animals to download
-  birds <- getMovebankAnimals(study =  x, login = loginStored) %>% 
-    # reduce the variables
-    dplyr::select(individual_id, timestamp_start, timestamp_end) %>% 
-    filter(timestamp_start != "") %>% 
-    # calculate the time each bird transmitted for
-    mutate(duration = difftime(timestamp_end, timestamp_start, units = "days", tz = "UTC")) %>% 
-    # select only birds that transmitted more than 300 days of data
-    filter(duration > 300)
+  birds <- getMovebankAnimals(study =  x, login = loginStored)# %>% 
+    # # reduce the variables
+    # dplyr::select(individual_id, timestamp_start, timestamp_end) %>% 
+    # filter(timestamp_start != "") %>% 
+    # # calculate the time each bird transmitted for
+    # mutate(duration = difftime(timestamp_end, timestamp_start, units = "days", tz = "UTC")) %>% 
+    # # select only birds that transmitted more than 300 days of data
+    # filter(duration > 300)
   birds <- unique(birds$individual_id)
   
   # download the data
@@ -135,7 +197,8 @@ tracks <- lapply(studies, function(x){
     
     print(y)
     
-    ind_locs <- getMovebankLocationData(study = x, animalName =  y, sensorID = "GPS", login = loginStored) %>% 
+    ind_locs <- getMovebankData(study = x, animalName =  y, sensorID = "GPS", 
+                                login = loginStored, removeDuplicatedTimestamps = T) %>% 
       # make the move object manipulable
       as.data.frame(row.names = NULL) %>% 
       # remove missing locations
@@ -147,7 +210,7 @@ tracks <- lapply(studies, function(x){
       ungroup() %>% 
       group_by(date(timestamp)) %>% 
       # the Haversine distance between first and last locations of the day
-      mutate(daily_dist = distHaversine(c(head(location.long,1), head(location.lat, 1)), c(tail(location.long,1), tail(location.lat, 1))),
+      mutate(daily_dist = distVincentyEllipsoid(c(head(location.long,1), head(location.lat, 1)), c(tail(location.long,1), tail(location.lat, 1))),
              # the rhumbline bearing between first and last locations of the day
              daily_direction = bearingRhumb(c(head(location.long,1), head(location.lat, 1)), c(tail(location.long,1), tail(location.lat, 1))),
              # finally a binary category denoting migratory or not, it is unnecessary but simplifies code
@@ -335,19 +398,20 @@ ggplot(burst_tracks, aes(ta_*180/pi, fill = factor(track_id)))+
 
 ## extract the orthometric height for the given locations
 
-# srtm_mosaic <- raster::raster("srtm_mosaic.grd")
-# 
-# centroid_spdf <- SpatialPointsDataFrame(burst_tracks[,c(2,4)], proj4string= srtm_mosaic@crs, burst_tracks)
-# 
-# cent_max <- raster::extract(srtm_mosaic,       # raster layer
-#                             centroid_spdf,     # SPDF with centroids for buffer
-#                             buffer = 0.25,    # buffer size, units depend on CRS
-#                             method = "simple", # whether to return one value or interpolated values
-#                             fun=mean,         # what value to extract
-#                             df=TRUE)           # return a data frame?
-# 
-# burst_tracks$srtm <- cent_max$layer
-# burst_tracks$"height-above-msl" <- burst_tracks$height.above.ellipsoid - burst_tracks$srtm
+srtm_mosaic <- raster::raster("srtm_mosaic.grd")
+
+centroid_spdf <- SpatialPointsDataFrame(burst_tracks[,c(2,4)], proj4string= srtm_mosaic@crs, burst_tracks)
+
+cent_max <- raster::extract(srtm_mosaic,       # raster layer
+                            centroid_spdf,     # SPDF with centroids for buffer
+                            buffer = 0.25,    # buffer size, units depend on CRS
+                            method = "simple", # whether to return one value or interpolated values
+                            fun=mean,         # what value to extract
+                            df=TRUE)           # return a data frame?
+
+burst_tracks$srtm <- cent_max$layer
+burst_tracks$srtm[is.na(burst_tracks$srtm)] <- 0
+burst_tracks$"height-above-msl" <- burst_tracks$height.above.ellipsoid - burst_tracks$srtm
 burst_tracks$divider <- c(rep("A", times = 1000000), rep("B", times = 1000000), rep("C", times = 1000000), rep("D", times = 1000000), rep("E", times = 1000000), rep("F", times = nrow(burst_tracks)-5000000))
 burst_tracks$divider <- c(rep("A", times = 584921), rep("B", times = 584921), rep("C", times = 584921), rep("D", times = 584921), rep("E", times = 584921), 
                           rep("F", times = 584921), rep("G", times = 584921), rep("H", times = 584921), rep("I", times = 584921), rep("J", times = 584924))
@@ -358,7 +422,7 @@ invisible(lapply(unique(burst_tracks$divider), function(x){
     dplyr::filter(divider == x)# %>% 
     #dplyr::select(2, 4, 5, 6, 7, 8, 13, 14, 15, 16, 19)
   
-  write.csv(df, file = paste0("C:/Users/heste/Desktop/HB_storks/tracks/burst_tracks_", x, ".csv"))
+  write.csv(df, file = paste0("C:/Users/heste/Desktop/HB_storks/tracks/burst_tracks_", x, "_", Sys.Date(), ".csv"))
 }))
 
 
@@ -367,6 +431,36 @@ check2 <- burst_tracks  %>%
      filter(track_id == "1176031140_2020_autumn_migration")
 write.csv(check2, file = "check2.csv")
 
+
+
+# Specify the data set
+request <- list(
+  "dataset_short_name" = "reanalysis-era5-single-levels",
+  "product_type"   = "reanalysis",
+  "variable"       = "boundary_layer_height",
+  #"pressure_level" = "925",
+  "year"           = "2015",
+  "month"          = "09",
+  "day"            = "19",
+  "time"           = "12:00",
+  "area"           = "60/-20/20/0",
+  "format"         = "netcdf",
+  "target"         = "era5-demo.nc"
+)
+# Start downloading the data, the path of the file
+# will be returned as a variable (ncfile)
+ncfile <- wf_request(
+  user = "hbronnvik",
+  request = request,   
+  transfer = TRUE,  
+  path = "~",
+  verbose = FALSE
+)
+# Open NetCDF file and plot
+library("ncdf4")
+r <- raster::raster("adaptor.mars.internal-1662025875.7416215-9183-17-dd109f60-ba66-409c-9159-836ed5e85a5d.nc")
+raster::plot(r, main = "ERA-5 Reanalysis (Boundary Layer Height 09.2015)")
+maps::map("world", add = TRUE)
 
 fit_distr <- function(x, dist_name, na.rm = TRUE) {
   
