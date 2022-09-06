@@ -8,6 +8,9 @@ library(ks)
 library(adehabitatHR)
 library(lubridate)
 library(tidyverse)
+library(gganimate)
+library(leaflet)
+library(viridis)
 
 
 ### retrieve the data
@@ -103,7 +106,7 @@ lapply(unique(month(locations_full$datestamp)), function(x){
   mo_locs <- locations_full %>% 
     dplyr::filter(month(locations_full$datestamp) == x)
   
-  save(mo_locs, file = paste0("C:/Users/heste/Desktop/HB_storks/months_6_studies/month_", x, "_locations.RData"))
+  #save(mo_locs, file = paste0("C:/Users/heste/Desktop/HB_storks/months_6_studies/month_", x, "_locations.RData"))
 })
 
 # if the data were split, read them in and thin them
@@ -127,6 +130,22 @@ locations_thin <- lapply(months_files, function(x){
 
 ### build a kernel estimate for each subset
 
+# assign each unique day a group so that kernels are built for every three days
+dates <- data.frame(date = unique(date(locations_thin$datestamp)),
+                    group = rep(1:51, times = c(3, 3, 3, 3, 3, 3, 3, 3, 
+                                                   3, 3, 3, 3, 3, 3, 3, 3, 
+                                                   3, 3, 3, 3, 3, 3, 3, 3, 
+                                                   3, 3, 3, 3, 3, 3, 3, 3, 
+                                                   3, 3, 3, 3, 3, 3, 3, 3, 
+                                                   3, 3, 3, 3, 3, 3, 3, 3, 
+                                                   3, 3, 3)))
+
+
+dat_2 <- SpatialPointsDataFrame(locations_thin[,c("location.long", "location.lat")], locations_thin[,c(1,4,9,10,16)])
+kus <- kernelUD(dat_2[, 4], same4all = TRUE)
+
+data(puechabonsp)
+
 ## adehabitat library
 kernels <- lapply(unique(date(locations_thin$datestamp)), function(f){
   print(f)
@@ -149,9 +168,9 @@ kernels <- lapply(unique(date(locations_thin$datestamp)), function(f){
   return(kern)
 })
 image(getvolumeUD(kernels[[1]]), col = rev(viridis(15)))
-
+#df <- as.data.frame(getvolumeUD(kernels[[1]]))
 image(kernels[[1]])
-plot(getverticeshr(kernels[[1]], 95), add = TRUE)
+plot(getverticeshr(kernels[[1]], standardize = TRUE, 95), add = TRUE)
 
 plot(getverticeshr(kernels[[1]]))
 data_sp <- locations_thin[which(date(locations_thin$datestamp) == unique(date(locations_thin$datestamp))[1]),]
@@ -163,20 +182,37 @@ points(data_sp, cex = 1, pch = 16)
 
 
 
-ud <- lapply(kernels, function(x){
+ud95 <- lapply(kernels, function(x){
   getverticeshr(x, 95)
   }) #%>% reduce(rbind)
 
-sapply(1:length(ud), function(i) {
+sapply(1:length(ud95), function(i) {
   
   #row.names(ud[[i]]) <- unique(date(locations_thin$datestamp))[i]
   row.names(ud[[i]]@data) <<- unique(date(locations_thin$datestamp))[i]
   
 }) 
 
-sdf_poly <- Reduce(rbind, ud)
+sdf_poly95 <- Reduce(rbind, ud95)
+df95 <- fortify(sdf_poly95)
 
-df <- fortify(sdf_poly)
+leaflet(sdf_poly95) %>% addTiles() %>%
+  addPolygons(weight = 1, fillOpacity = .2)
+
+ud50 <- lapply(kernels, function(x){
+  getverticeshr(x, 50)
+}) #%>% reduce(rbind)
+
+sapply(1:length(ud50), function(i) {
+  
+  #row.names(ud[[i]]) <- unique(date(locations_thin$datestamp))[i]
+  row.names(ud[[i]]@data) <<- unique(date(locations_thin$datestamp))[i]
+  
+})
+
+sdf_poly50 <- Reduce(rbind, ud50)
+df50 <- fortify(sdf_poly50)
+
 g <- ggplot(df, aes(x = long, y = lat, fill = id, group = group)) +
   geom_polygon(alpha = .4) +
   coord_equal() +
@@ -189,14 +225,21 @@ mv <- df %>%
   group_by(id) %>% 
   mutate(timing = 1:153)
 
-mv <- data.frame()
+mv95 <- data.frame()
 
-for (i in 1:length(unique(df$id))) {
-  x <- df[df$id == unique(df$id)[i],]
+for (i in 1:length(unique(df95$id))) {
+  x <- df95[df95$id == unique(df95$id)[i],]
   x$date <- unique(date(locations_thin$datestamp))[i]
-  mv <- rbind(mv, x)
+  mv95 <- rbind(mv95, x)
 }
 
+mv50 <- data.frame()
+
+for (i in 1:length(unique(df50$id))) {
+  x <- df50[df50$id == unique(df50$id)[i],]
+  x$date <- unique(date(locations_thin$datestamp))[i]
+  mv50 <- rbind(mv50, x)
+}
 
 ggplot(mv, aes(x = long, y = lat, fill = id, group = group)) + 
   geom_polygon(alpha = 0.4) +
@@ -208,55 +251,140 @@ ggplot(mv, aes(x = long, y = lat, fill = id, group = group)) +
 countries <- c("Germany", "Switzerland", "France", "Spain", "Morocco", "Italy", "Portugal", "Belgium", "Netherlands",
                "Tunisia", "Algeria", "Liechtenstein", "Luxembourg", "Mauritania", "Mali", "Libya", "Austria", "Slovenia",
                "Czech Republic", "Western Sahara", "Senegal", "Gambia", "Guinea Bissau", "Guinea", "Mali", "Sierra Leone",
-               "Liberia", "Cote d'Ivoire")
+               "Liberia", "Ivory Coast", "Togo", "UK", "Ghana", "Burkina Faso", "Benin", "Niger", "Nigeria", "Chad", "Cameroon")
 
 ggplot(mv, aes(x = long, y = lat, fill = id, group = group)) + 
-  borders(regions = countries, fill = "gray80") +
+  borders(regions = countries, fill = "gray50") +
   geom_polygon(alpha = 0.4) +
   labs(x = " Longitude", y = "Latitude") +
   transition_time(time = date)+
   theme_classic() +
   theme(legend.position="none", axis.text = element_text(color = "black"))
 
-ggplot(mv, aes(x = long, y = lat, fill = id, group = group)) + 
+img_animated <- ggplot(mv95, aes(x = long, y = lat, fill = group, group = group)) + 
+  borders(regions = countries, fill = "gray70", colour = "gray70") +
+  #borders(database = "world", xlim = c(-10, 20), ylim = c(10, 60), fill = "gray80", colour = "gray80") +
   geom_polygon(alpha = 0.4) +
-  labs(x = " Longitude", y = "Latitude") +
-  transition_reveal(along = date)+
+  geom_polygon(data = mv50, alpha = 0.8) +
+  #geom_point(data = locations_thin, aes(x = location.long, y = location.lat, group = date(datestamp))) +
+  scale_fill_viridis(discrete=TRUE, option="A") +
+  labs(x = " Longitude", y = "Latitude", title = 'Date: {gsub("1995-", "", current_frame)}')+
+  transition_manual(frames = date)+
+  theme_classic() +
+  theme(legend.position="none", axis.text = element_text(color = "black"))
+anim_save("C:/Users/heste/Desktop/HB_storks/kernels_multi.gif", img_animated)
+
+library("rnaturalearth")
+library("rnaturalearthdata")
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+ggplot(data = world) +
+  geom_sf(fill = "gray70", colour = "gray70") +
+  coord_sf(xlim = c(-30, 30), ylim = c(0, 60), expand = FALSE) +
+  labs(x = "Longitude", y = "Latitude") + 
+  theme(panel.grid.major = element_blank(), 
+        panel.background = element_rect(fill = "aliceblue"))
+
+bbox <- c(-30,0,30,60)
+googlemap <- get_map(location = bbox)
+ggmap(googlemap) +
+  geom_polygon(data = mv95, aes(long, lat), alpha = 0.4) +
+  geom_polygon(data = mv50, aes(long, lat), alpha = 0.8) +
+  scale_fill_viridis(discrete=TRUE, option="A") +
+  labs(x = " Longitude", y = "Latitude", title = 'Date: {gsub("1995-", "", current_frame)}')+
+  transition_manual(frames = date)+
   theme_classic() +
   theme(legend.position="none", axis.text = element_text(color = "black"))
 
-library(ggplot2)
-library(ggthemes)
-library(raster)
-library(rgeos)
-
-gbr <- getData('SRTM', lon=0, lat=35)
-#gbr <- gSimplify(gbr, 0.01)
-
-gbr_map <- fortify(gbr)
-
 ## KS library
-kernels <- lapply(unique(date(locations_thin$datestamp)), function(f){
+kernels <- lapply(unique(date(locations_thin$datestamp))[1:3], function(f){
   print(f)
   data_sp <- locations_thin %>%  # store the data, then create a spatial object for plotting
     dplyr::filter(date(datestamp) == f) %>% 
     dplyr::select(location.long, location.lat)
   
-  #coordinates(data_sp) <- ~ location.long + location.lat
+  kern <- Hpi(x = coordinates(data_sp), binned = F)
   
-  kern <- Hpi(x = coordinates(data_sp))
+  fhat <- kde(x = data_sp, H = get("kern"), compute.cont = T, binned = F)
   
-  #kern <- kernelUD(data_sp, h = "href")
+  #png(filename= paste0("C:/Users/heste/Desktop/HB_storks/gif/", f, ".png"))
+  #plot(fhat, xlab = "Longitude", ylab = "Latitude", xlim=c(-15,10), ylim = c(25, 50))
+  #dev.off()
   
-  fhat <- kde(x = data_sp, H = get("kern"), compute.cont = T)
-  
-  png(filename= paste0("C:/Users/heste/Desktop/HB_storks/gif/", f, ".png"))
-  plot(fhat, xlab = "Longitude", ylab = "Latitude", xlim=c(-15,10), ylim = c(25, 50))
-  dev.off()
-  
-  return(kern)
+  return(fhat)
 })
 
+# rhr library (http://jmsigner.github.io/rhrman/cliHRE.html)
+library(rhr)
+kernels <- lapply(unique(date(locations_thin$datestamp)), function(f){
+  print(f)
+  
+  data_sp <- locations_thin %>%  # store the data, then create a spatial object for plotting
+    dplyr::filter(date(datestamp) == f) %>% 
+    dplyr::select(location.long, location.lat) %>% 
+    as.data.frame()
+  
+  #kd1 <- rhrKDE(data_sp)
+  bw <- rhrHref(data_sp)
+  #bw <- rhrHlscv(data_sp)
+   
+  kd <- rhrKDE(data_sp, h = bw$h)
+  
+  #png(filename= paste0("C:/Users/heste/Desktop/HB_storks/gif/", f, ".png"))
+  #plot(fhat, xlab = "Longitude", ylab = "Latitude", xlim=c(-15,10), ylim = c(25, 50))
+  #dev.off()
+  
+  return(kd)
+})
+iso <- rhrIsopleths(kernels[[10]], levels = seq(10, 90, 5))
+plot(rhrUD(kernels[[153]]), xlim = c(-20, 20), ylim = c(10,60))
+lines(iso, add = T)
+maps::map("world", add = TRUE)
+
+# make vector of the unique dates that each kernel belongs to
+dates <- unique(date(locations_thin$datestamp))
+# use the number in that to link to the item in the list
+
+tracks <- tracks %>% 
+  mutate(datestamp = timestamp) 
+
+year(tracks$datestamp) <- 1995
+
+t <- lapply(unique(date(tracks$datestamp)), function(x){
+
+  df <- tracks %>% 
+    filter(date(datestamp) == x)
+
+  # for each unique date in the data, call the list item
+  id <- which(dates == x)
+  kd <- rhrUD(kernels[[125]])
+  
+  # extract the value for each location
+  vals <- raster::extract(kd, df[, c("location.long", "location.lat")])
+  
+  # append
+  df <- df %>% 
+    mutate(kernel_dens = vals)
+  
+}) %>% reduce(rbind)
+
+# Build 10 images -> save them at .png format
+png(file="gif/%02d.png", width=480, height=480)
+
+for (i in 1:length(dates)){
+  maps::map("world", xlim = c(-40,20), ylim = c(10,60))
+  plot(rhrUD(kernels[[i]]), add = T)
+  maps::map("world", xlim = c(-40,20), ylim = c(10,60), add = T)
+  mtext(paste(day(dates[i]), "-", month(dates[i])), side=3)
+}
+dev.off()
+
+# Use image magick
+system("*.png animated_count_down.gif")
+
+# Remove png files
+file.remove(list.files(pattern=".png"))
 
 ### save
 
@@ -281,13 +409,13 @@ ggplot(dummydata, aes(x = x, y= y)) +
 
 library(magick)
 imgs <- list.files("C:/Users/heste/Desktop/HB_storks/gif/", full.names = TRUE)
-img_list <- lapply(imgs, image_read)
+img_list <- lapply(gtools::mixedsort(imgs), image_read)
 
 ## join the images together
 img_joined <- image_join(img_list)
 
 ## animate at 2 frames per second
-img_animated <- image_animate(img_joined, fps = 10)
+img_animated <- image_animate(img_joined, fps = 5)
 
 image_write(image = img_animated,
-            path = "C:/Users/heste/Desktop/HB_storks/kernels.gif")
+            path = "C:/Users/heste/Desktop/HB_storks/kernels_rhr.gif")
