@@ -9,7 +9,7 @@ library(lubridate)
 library(tidyverse)
 
 # required information
-setwd("C:/Users/heste/Desktop/HB_storks")
+setwd("C:/Users/hbronnvik/Documents/stork_code_chunks")
 load("loginStored.rdata")
 studies <- c(24442409, 212096177, 76367850, 21231406, 1176017658, 173641633)
 
