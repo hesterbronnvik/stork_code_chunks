@@ -10,7 +10,7 @@ library(tidyverse)
 
 # required information
 setwd("C:/Users/hbronnvik/Documents/stork_code_chunks")
-load("loginStored.rdata")
+load("C:/Users/hbronnvik/Documents/loginStored.rdata")
 studies <- c(24442409, 212096177, 76367850, 21231406, 1176017658, 173641633)
 
 # determine the identities of the nestling birds (remove any care center adults)
@@ -73,41 +73,19 @@ lost_birds <- lapply(studies, function(x){
         filter(year(timestamp) == y) 
       
       ## Remove outliers
-      # calculate ground speeds
-      dist <- lapply(1:nrow(locs_df), function(x){
-        d <- pointDistance(c(locs_df$location.long[x], locs_df$location.lat[x]), c(locs_df$location.long[x+1], locs_df$location.lat[x+1]), lonlat = T)
-        return(d)
-      }) %>% unlist()
-      
-      tlag <- lapply(1:nrow(locs_df), function(x){
-        t <- difftime(locs_df$timestamp[x+1], locs_df$timestamp[x], units = "secs")
-        return(t)
-      }) %>% unlist()
-      
+      # remove duplicated locations because they prevent accurate calculations of distance and speed
       locs_df <- locs_df %>% 
-        mutate(distance = dist,
-               timediff = tlag,
-               gr_speed = distance/timediff)
+        drop_na(height.above.ellipsoid)
       
-      # remove duplicated locations in the same time
-      duplicate_spacetime <- locs_df %>%
-        dplyr::select(location.long, location.lat, individual.id, timestamp) %>%
-        duplicated()
-      if(sum(duplicate_spacetime) > 0){locs_df <- locs_df[!duplicate_spacetime,]}
-      
-      # if timestamps are duplicated in different space, remove the location with the higher move::speed
-      duplicate_time <- locs_df %>%
-        dplyr::select(timestamp) %>%
-        duplicated()
-      if(sum(duplicate_time) > 0){dt <- locs_df[which(locs_df$timestamp %in% locs_df[duplicated(locs_df$timestamp),"timestamp"]),];
-      dt <- rownames_to_column(dt);
-      locs_df <- locs_df[-as.numeric(dt$rowname[which.max(dt$gr_speed)]),]}
+      # warn if a duplicated timestamp contains information other than location (not usually the case)
+      if(nrow(locs_df[which(locs_df$timestamp %in% locs_df[duplicated(locs_df$timestamp),
+                            "timestamp"]),]) > 0){print("Duplicates containing HAE and DOP values exist.")}
       
       # now that the duplicates have been dealt with, remove speed outliers (using instantaneous speed from the tag)
       locs_df <- locs_df %>% 
         filter(ground.speed < 50)
       
-      # calculate ground speeds again now that faulty locations are removed
+      # calculate ground speeds now that faulty locations are removed
       dist <- lapply(1:nrow(locs_df), function(x){
         d <- pointDistance(c(locs_df$location.long[x], locs_df$location.lat[x]), c(locs_df$location.long[x+1], locs_df$location.lat[x+1]), lonlat = T)
         return(d)
