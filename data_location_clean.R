@@ -12,6 +12,7 @@ library(tidyverse)
 setwd("C:/Users/hbronnvik/Documents/stork_code_chunks")
 load("C:/Users/hbronnvik/Documents/loginStored.rdata")
 studies <- c(24442409, 212096177, 76367850, 21231406, 1176017658, 173641633)
+m_thresh <- 100*1000 # the threshold above which movement is migratory
 
 # determine the identities of the nestling birds (remove any care center adults)
 nestlings <- lapply(studies, function(x){
@@ -113,12 +114,60 @@ lost_birds <- lapply(studies, function(x){
                compass_direction = ifelse(daily_direction > 90 & daily_direction < 270, "southward", "northward")) %>% 
         ungroup()
       
-      return(locs_df)
-    })
+      # find the first and last instances of migration in each direction
+      locs_df_s <- locs_df %>% 
+        filter(daily_distance > m_thresh & compass_direction == "southward")
+      
+      on_s <- locs_df_s %>% 
+        select(timestamp) %>% 
+        slice(1)
+      
+      off_s <- locs_df_s %>% 
+        select(timestamp) %>% 
+        slice(n())
+      
+      locs_df_n <- locs_df %>% 
+        filter(daily_distance > m_thresh & compass_direction == "northward")
+      
+      on_n <- locs_df_n %>% 
+        select(timestamp) %>% 
+        slice(1)
+      
+      off_n <- locs_df_n %>% 
+        select(timestamp) %>% 
+        slice(n())
+      
+      # use these to classify migration
+      if(nrow(on_s) > 0){
+        locs_df_s <- locs_df %>% 
+          filter(between(timestamp, on_s, off_s)) %>% 
+          mutate(phase = paste0("fall_migration_", y))
+      } # else what? Need a way to catch birds that did not migrate.
+      
+      if(nrow(on_n) > 0){
+        locs_df_n <- locs_df %>% 
+          filter(between(timestamp, on_n, off_n)) %>% 
+          mutate(phase = paste0("spring_migration_", y))
+      } # again, the birds that have no spring migration need a catch.
+      
+      ## Finally, sub-sample to 15 minute intervals to remove burst data and reduce memory use
+      locs_df <- rbind(locs_df_s, locs_df_n) %>% 
+        arrange(timestamp) %>% 
+        mutate(seq15 = round_date(timestamp, "15 minutes")) %>% 
+        group_by(seq15) %>% 
+        slice(1)
+      
+      print(paste0("Completed the classification of individual ", w, " in ", y, "."))
+      return(locs_df) # finish the year
+    }) %>% reduce(rbind)
     
-    return(yr_locs)
-  })
-})
+    print(paste0("Completed the classification of individual ", w, "."))
+    return(yr_locs) # finish the ID
+  }) %>% reduce(rbind)
+  
+  print(paste0("Completed the classification of study ", x, "."))
+  return(locs) # finish the study
+}) %>% reduce(rbind)
 
 
 
