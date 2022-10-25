@@ -37,22 +37,6 @@ nestlings <- lapply(studies, function(x){
   
 }) %>% unlist()
 
-# did the animal ever transmit  100 km per day?
-# is the last time the animal moved 100km per day within the last week it transmitted?
-
-# the birds that are not yet done with their 2022 migration
-unfinished <- lapply(studies, function(x){
-  info <- getMovebankAnimals(x, loginStored) %>% 
-    filter(sensor_type_id == 653 & individual_id %in% nestlings)
-  
-  current <- info %>%
-    filter(year(timestamp_start) == 2022 & timestamp_end > Sys.Date()-2)
-  
-  return(current)
-}) %>% reduce(rbind)
-
-# take out the birds from this year that have not yet finished their first migration
-nestlings <- nestlings[!nestlings %in% unfinished$individual_id]
 
 ## each study
 lost_birds <- lapply(studies, function(x){
@@ -71,20 +55,22 @@ lost_birds <- lapply(studies, function(x){
       
       ## Get the distance covered in each day for the full data (bursts and all)
       locs_df <- ind_locs %>% 
-        filter(year(timestamp) == y) 
-      
+        filter(year(timestamp) == y) %>% 
+        drop_na(location.long) %>% 
+        mutate(index = row_number())
+      # print(paste(x, y, w, sep = "_"))
+ 
       ## Remove outliers
       # remove duplicated locations because they prevent accurate calculations of distance and speed
+      doubles <- locs_df[which(locs_df$timestamp %in% locs_df[duplicated(locs_df$timestamp), "timestamp"]),] %>% 
+        filter(is.na(height.above.ellipsoid))
+      
       locs_df <- locs_df %>% 
-        drop_na(height.above.ellipsoid)
+        filter(!index %in% doubles$index) 
       
       # warn if a duplicated timestamp contains information other than location (not usually the case)
       if(nrow(locs_df[which(locs_df$timestamp %in% locs_df[duplicated(locs_df$timestamp),
-                            "timestamp"]),]) > 0){print("Duplicates containing HAE and DOP values exist.")}
-      
-      # now that the duplicates have been dealt with, remove speed outliers (using instantaneous speed from the tag)
-      locs_df <- locs_df %>% 
-        filter(ground.speed < 50)
+                                                           "timestamp"]),]) > 0){print("Duplicates containing HAE and DOP values exist.")}
       
       # calculate ground speeds now that faulty locations are removed
       dist <- lapply(1:nrow(locs_df), function(x){
@@ -100,7 +86,9 @@ lost_birds <- lapply(studies, function(x){
       locs_df <- locs_df %>% 
         mutate(distance = dist,
                timediff = tlag,
-               gr_speed = distance/tlag)
+               gr_speed = distance/tlag)%>%
+        # now that the duplicates have been dealt with, remove speed outliers (using instantaneous speed from the tag)
+        filter(gr_speed < 50)
       
       ## Now calculate daily distances to classify migration onset
       locs_df <- locs_df %>% 
@@ -116,7 +104,7 @@ lost_birds <- lapply(studies, function(x){
       
       # find the first and last instances of migration in each direction
       locs_df_s <- locs_df %>% 
-        filter(daily_distance > m_thresh & compass_direction == "southward")
+        filter(daily_distance >= m_thresh & compass_direction == "southward")
       
       on_s <- locs_df_s %>% 
         select(timestamp) %>% 
@@ -127,7 +115,7 @@ lost_birds <- lapply(studies, function(x){
         slice(n())
       
       locs_df_n <- locs_df %>% 
-        filter(daily_distance > m_thresh & compass_direction == "northward")
+        filter(daily_distance >= m_thresh & compass_direction == "northward")
       
       on_n <- locs_df_n %>% 
         select(timestamp) %>% 
@@ -142,41 +130,64 @@ lost_birds <- lapply(studies, function(x){
         locs_df_s <- locs_df %>% 
           filter(between(timestamp, on_s, off_s)) %>% 
           mutate(phase = paste0("fall_migration_", y))
-      } # else what? Need a way to catch birds that did not migrate.
+      }else{locs_df_s <- locs_df %>% 
+        slice(1) %>% 
+        mutate(phase = "no_migration")}
       
       if(nrow(on_n) > 0){
         locs_df_n <- locs_df %>% 
           filter(between(timestamp, on_n, off_n)) %>% 
           mutate(phase = paste0("spring_migration_", y))
-      } # again, the birds that have no spring migration need a catch.
+      }else{locs_df_n <- locs_df %>% 
+        slice(1) %>% 
+        mutate(phase = "no_spring_migration")}
       
       ## Finally, sub-sample to 15 minute intervals to remove burst data and reduce memory use
-      locs_df <- rbind(locs_df_s, locs_df_n) %>% 
+      locs_df <- rbind(locs_df_s, locs_df_n)  %>% 
         arrange(timestamp) %>% 
         mutate(seq15 = round_date(timestamp, "15 minutes")) %>% 
         group_by(seq15) %>% 
         slice(1)
       
-      print(paste0("Completed the classification of individual ", w, " in ", y, "."))
+      print(paste0("Completed the classification of individual ", w, " in ", y, "."), quotes = F)
       return(locs_df) # finish the year
     }) %>% reduce(rbind)
     
-    print(paste0("Completed the classification of individual ", w, "."))
+    print(paste0("Completed the classification of individual ", w, "."), quotes = F)
     return(yr_locs) # finish the ID
   }) %>% reduce(rbind)
   
-  print(paste0("Completed the classification of study ", x, "."))
+  print(paste0("Completed the classification of study ", x, "."), quotes = F)
   return(locs) # finish the study
 }) %>% reduce(rbind)
 
+# remove the information from non-migration, this should remove all birds that did not migrate
+found_birds <- lost_birds %>% 
+  filter(!str_detect(phase, "no_"))
+
+save(found_birds, paste0("migration100_15m_", Sys.Date(), ".RData"))
+
+
+# identify individuals that died on migration
 
 
 
+# did the animal ever transmit  100 km per day?
+# is the last time the animal moved 100km per day within the last week it transmitted?
 
-
-
-
-
+# # the birds that are not yet done with their 2022 migration
+# unfinished <- lapply(studies, function(x){
+#   info <- getMovebankAnimals(x, loginStored) %>% 
+#     filter(sensor_type_id == 653 & individual_id %in% nestlings)
+#   
+#   current <- info %>%
+#     filter(year(timestamp_start) == 2022 & timestamp_end > Sys.Date()-2)
+#   
+#   return(current)
+# }) %>% reduce(rbind)
+# 
+# # take out the birds from this year that have not yet finished their first migration
+# nestlings <- nestlings[!nestlings %in% unfinished$individual_id]
 
 
 
