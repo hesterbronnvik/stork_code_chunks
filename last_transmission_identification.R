@@ -13,6 +13,7 @@ library(tidyverse)
 setwd("C:/Users/hbronnvik/Documents/stork_code_chunks")
 load("C:/Users/hbronnvik/Documents/loginStored.rdata")
 studies <- c(24442409, 212096177, 76367850, 21231406, 1176017658, 173641633)
+d_thresh <- 5*24*60*60 # the number of seconds in a day threshold for defining having died
 
 # the files that were just created containing the location data of all adults classified 
 # as migrating if moving more than m_thresh in a day and given north or south
@@ -111,8 +112,9 @@ death_dates <- rbind(death_dates, md[,c("individual_id", "date")]) %>%
 # where a date is simply unclear, I have chosen to investigate it again below
 md <- md %>% 
   filter(!individual_id %in% death_dates$individual_id) %>% 
-  mutate(date = c(NA, NA, NA, NA, NA, "2016-04-30", "2017-06-27", 
-                  NA, NA, NA, "2014-09-13", NA , NA, NA, NA, NA))
+  mutate(date = ifelse(individual_id == "77139271", "2016-04-30", 
+                       ifelse(individual_id == "173666935", "2017-06-29", 
+                              ifelse(individual_id == "23466917", "2014-09-13", NA))))
 
 # add these dates to the death confirmation group and move on without them
 death_dates <- rbind(death_dates, md[,c("individual_id", "date")]) %>% 
@@ -120,9 +122,36 @@ death_dates <- rbind(death_dates, md[,c("individual_id", "date")]) %>%
 
 # for remaining birds, use the last date
 missing_dates <- last_known %>% 
-  filter(!individual_id %in% death_dates$individual_id)
-# find a start date a threshold of days before that
+  filter(!individual_id %in% death_dates$individual_id) %>% 
+  rowwise() %>% 
+  mutate(timestamp_end = as.POSIXct(sub(".000", "", timestamp_end), tz = "UTC"), 
+         # find a start date a threshold of days before that (now 5)
+         pull_start = gsub("[[:punct:]]| ", "", paste0(timestamp_end - d_thresh, "000")),
+         timestamp_end = gsub("[[:punct:]]| ", "", paste0(timestamp_end, "000"))) %>% 
+  ungroup()
+
+
 # download the ACC 
+library(moveACC)
+info <- getMovebankAnimals(studies[1], loginStored) %>% 
+  filter(sensor_type_id == 2365683 & individual_id %in% missing_dates$individual_id) %>% 
+  select("individual_id", "timestamp_start", "timestamp_end") %>% 
+  mutate(pull_start = gsub("[[:punct:]]| ", "", as.POSIXct(sub(".000", "", info$timestamp_end), tz = "UTC", origin = "1970-01-01") - d_thresh))
+# the last location of the first bird is one year earlier than the last GPS location
+# the second bird has no ACC
+acc_df <- getMovebankNonLocationData(study = studies[1], animalName = info$individual_id[3],
+                                     sensorID=2365683,  login=loginStored)
+ACCtimeRange(acc_df, units="days")
+acc_df2 <- acc_df %>% 
+  filter(timestamp > (timestamp[n()] - d_thresh))
+ACCtimeRange(acc_df2, units="days")
+BurstSamplingScedule(acc_df2)
+
+PlotAccDataTIME(df=acc_df2, bursts = c(100))
+
+# timestamp_start = info$pull_start[3],
+# timestamp_end = info$timestamp_end[3],
+
 # calculate DBA
 # if under a threshold, call this animal dead
 # save the death date
