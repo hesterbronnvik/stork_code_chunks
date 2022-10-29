@@ -5,6 +5,7 @@
 
 # required packages
 library(move)
+library(moveACC)
 library(lubridate)
 library(stringr)
 library(tidyverse)
@@ -83,15 +84,27 @@ missing_dates <- death_dates %>%
 
 
 # download the ACC 
-library(moveACC)
-info <- getMovebankAnimals(studies[1], loginStored) %>% 
-  filter(sensor_type_id == 2365683 & individual_id %in% missing_dates$individual_id) %>% 
-  select("individual_id", "timestamp_start", "timestamp_end") %>% 
-  mutate(pull_start = gsub("[[:punct:]]| ", "", as.POSIXct(sub(".000", "", timestamp_end), tz = "UTC", origin = "1970-01-01") - d_thresh))
+info <- lapply(studies, function(x){
+  info <- getMovebankAnimals(x, loginStored) %>% 
+    filter(sensor_type_id == 2365683 & individual_id %in% missing_dates$individual_id) %>% 
+    select("individual_id", "timestamp_start", "timestamp_end") %>% 
+    mutate(pull_start = paste0(gsub("[[:punct:]]| ", "", as.POSIXct(sub(".000", "", timestamp_end), tz = "UTC", origin = "1970-01-01")-d_thresh), "000"),
+           pull_end = paste0(gsub("[[:punct:]]| ", "", as.POSIXct(sub(".000", "", timestamp_end), tz = "UTC", origin = "1970-01-01")), "000"),
+           study = x)
+  
+}) %>% reduce(rbind)
 # the last location of the first bird is one year earlier than the last GPS location
 # the second bird has no ACC
-acc_df <- getMovebankNonLocationData(study = studies[1], animalName = info$individual_id[3],
-                                     sensorID=2365683,  login=loginStored)
+
+acc_data <- lapply(1:nrow(info), function(x){
+  df <- info[x,]
+  acc_df <- getMovebankNonLocationData(study = df$study, animalName = df$individual_id,
+                                       sensorID=2365683,  login=loginStored)
+}) %>% reduce(rbind)
+
+
+# timestamp_start = info$pull_start[3],
+# timestamp_end = info$pull_end[3],
 ACCtimeRange(acc_df, units="days")
 acc_df2 <- acc_df %>% 
   filter(timestamp > (timestamp[n()] - d_thresh))
@@ -100,8 +113,6 @@ ACCtimeRange(acc_df2, units="days")
 # 
 # PlotAccDataTIME(df=acc_df2, bursts = c(100))
 
-# timestamp_start = info$pull_start[3],
-# timestamp_end = info$timestamp_end[3],
 axesCol = grep("acceleration_axes", names(acc_df2), value=T)
 if(nrow(acc_df2)>0 & length(unique(acc_df2[, axesCol]))==1){
   accDf_vedba <- acc_df2 %>% 
@@ -134,20 +145,32 @@ ggplot(accDf_vedba, aes(timestamp, meanVeDBA, color = meanVeDBA)) +
   theme(legend.position = "none")
 
 diagnostic <- accDf_vedba %>% 
-  group_by(date(timestamp)) %>% 
+  mutate(date = date(timestamp)) %>% 
+  group_by(date) %>% 
   summarize(activity = mean(meanVeDBA))
 
 diagnostic
 
-ggplot(diagnostic, aes(`date(timestamp)`, activity, color = activity)) +
+ggplot(diagnostic, aes(date, activity, color = activity)) +
   geom_point(alpha = 0.3) +
-  labs(x = "Date", y = "Mean VeDBA per burst") +
+  labs(x = "Date", y = "Mean VeDBA per burst", title = unique(acc_df$individual_id)) +
   theme_classic() +
   theme(legend.position = "none")
 
 last_known$timestamp_end[which(last_known$individual_id == unique(acc_df2$individual_id))]
 last_known$death_comments[which(last_known$individual_id == unique(acc_df2$individual_id))]
 
+
+if(sum(diagnostic[nrow(diagnostic)-2:nrow(diagnostic), "activity"]) < 20){
+  life <- diagnostic %>% 
+    filter(activity > 10) %>% 
+    slice(n()) %>% 
+    select(date)
+  death <- diagnostic %>% 
+    filter(date > life) %>% 
+    slice(1)
+  missing_dates$date[which(missing_dates$individual_id == unique(acc_df$individual_id))] <- death
+}
 
 # if the DBA was below the threshold for a given amount of time
 # but if that time is within the last read, then it shows as not having died
