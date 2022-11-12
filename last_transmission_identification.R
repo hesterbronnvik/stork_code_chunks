@@ -1,6 +1,7 @@
 ### The birds that do not contribute data to the study ("dead")
 ### Hester Brønnvik
 ### 27.10.2022
+### hbronnvik@ab.mpg.de
 
 
 # required packages
@@ -14,7 +15,7 @@ library(tidyverse)
 setwd("C:/Users/hbronnvik/Documents/stork_code_chunks")
 load("C:/Users/hbronnvik/Documents/loginStored.rdata")
 studies <- c(24442409, 212096177, 76367850, 21231406, 1176017658, 173641633)
-d_thresh <- 60*24*60*60 # the number of seconds in a day threshold for defining having died
+d_thresh <- 120*24*60*60 # the number of seconds in a day threshold for defining having died
 a_thresh <- 10*2 # the average activity a bird has to be below to be dead x days 
 
 # the files that were just created containing the location data of all adults classified 
@@ -82,7 +83,7 @@ missing_dates <- death_dates %>%
   filter(is.na(date))
 
 
-# download the ACC 
+# download the ACC reference data
 info <- lapply(studies, function(x){
   info <- getMovebankAnimals(x, loginStored) %>% 
     filter(sensor_type_id == 2365683 & individual_id %in% missing_dates$individual_id) %>% 
@@ -96,32 +97,32 @@ info <- lapply(studies, function(x){
 # x <- 5 # 42
 acc_data <- lapply(1:nrow(info), function(x)tryCatch({
   df <- info[x,]
-  # download the data for each individual
+  # download the ACC data for each individual
   acc_df <- getMovebankNonLocationData(study = df$study, animalName = df$individual_id,
                                        sensorID=2365683, timestamp_start = info$pull_start[x],
                                        login=loginStored)
-  # remove the inconsistent column to allo rbinding
-  if("manually_marked_outlier" %in% colnames(acc_df)){
+  # remove the inconsistent column to allow row binding
+  if(!"manually_marked_outlier" %in% colnames(acc_df)){
     acc_df <- acc_df %>% 
-      select(-"manually_marked_outlier")
+      mutate(manually_marked_outlier = NA)
   }
   print(ACCtimeRange(acc_df, units="days"), quotes = F)
   return(acc_df)
 }, error = function(msg){ # if an error is thrown (no ACC data), continue and record the ID
   acc_df <- data.frame(matrix(NA,
                               nrow = 1,
-                              ncol = 20))
+                              ncol = 21))
   colnames(acc_df) <- c("individual_id", "deployment_id", "tag_id", "study_id", "sensor_type_id", 
                         "individual_local_identifier", "tag_local_identifier", "individual_taxon_canonical_name", 
                         "data_decoding_software", "eobs_acceleration_axes", "eobs_acceleration_sampling_frequency_per_axis", 
                         "eobs_accelerations_raw", "eobs_key_bin_checksum", "eobs_start_timestamp", 
                         "import_marked_outlier", "timestamp", "event_id",  "visible", "study_name", 
-                        "sensor_type")
+                        "sensor_type", "manually_marked_outlier")
   acc_df$individual_id <- df$individual_id
   return(acc_df)
-})) %>% reduce(rbind)
+})) #%>% reduce(rbind) 
 
-# save(acc_data, file = "C:/Users/hbronnvik/Documents/storkSSFs/acc_data/acc_94ids_31.10.2022.RData")
+# save(acc_data, file = "C:/Users/hbronnvik/Documents/storkSSFs/acc_data/acc_309ids_11.11.2022.RData")
 load("C:/Users/hbronnvik/Documents/storkSSFs/acc_data/acc_94ids_31.10.2022.RData")
 
 
@@ -133,32 +134,27 @@ event_DBAs <- lapply(todo, function(x)tryCatch({
   acc <- acc_data %>% 
     filter(individual_id == x)
   
+  accRawCol <- grep("accelerations_raw", names(acc), value=T)
+  sampFreqCol <- grep("acceleration_sampling_frequency_per_axis", names(acc), value=T)
   axesCol = grep("acceleration_axes", names(acc), value=T)
+  
   if(nrow(acc) > 0 & length(unique(acc[, axesCol]))==1){
-    accDf_vedba <- acc %>% 
-      select("individual_id", "timestamp", "event_id") %>% 
-      mutate(n_samples_per_axis = NA, 
-             acc_burst_duration_s=NA, 
-             meanVeDBA=NA,
-             meanODBA=NA)
-    
-    accRawCol <- grep("accelerations_raw", names(acc), value=T)
-    sampFreqCol <- grep("acceleration_sampling_frequency_per_axis", names(acc), value=T)
-    
-    for(j in 1:nrow(acc)){
-      Naxes <- nchar(as.character(acc[j, axesCol]))
-      accMx <- matrix(as.integer(unlist(strsplit(as.character(acc[j, accRawCol]), " "))), ncol=Naxes, byrow = T)
+    VeDBA <- lapply(1:nrow(acc), function(x){
+      
+      if(nchar(acc[x, axesCol])<3){stop("The ACC data have fewer than 3 axes.")}
+      accMx <- matrix(as.integer(unlist(strsplit(as.character(acc[x, accRawCol]), " "))), ncol=3, byrow = T)
       n_samples_per_axis <- nrow(accMx)
-      acc_burst_duration_s <- n_samples_per_axis/acc[j, sampFreqCol]
-      if(nchar(acc[j, axesCol])<3){stop("The ACC data have fewer than 3 axes.")}
+      acc_burst_duration_s <- n_samples_per_axis/acc[x, sampFreqCol]
       VeDBA <- sqrt((accMx[,1]-mean(accMx[,1]))^2 + (accMx[,2]-mean(accMx[,2]))^2 + (accMx[,3]-mean(accMx[,3]))^2)
       ODBA <- (accMx[,1]-mean(accMx[,1])) + (accMx[,2]-mean(accMx[,2])) + (accMx[,3]-mean(accMx[,3]))
-      
-      accDf_vedba[j, c("n_samples_per_axis", "acc_burst_duration_s", "meanVeDBA", "meanODBA")] <- c(n_samples_per_axis, acc_burst_duration_s, mean(VeDBA, na.rm=T), mean(ODBA, na.rm=T))
-    }
+      DBA <- mean(VeDBA)
+      return(DBA)
+    }) %>% reduce(rbind)
+    
+    acc$VeDBA <- VeDBA
   }
 
-  return(accDf_vedba)
+  return(acc)
 }, error = function(msg){
   accDf_vedba <- data.frame(matrix(NA, nrow = 1, ncol = 6))
   colnames(accDf_vedba) <- c("timestamp", "event_id", "n_samples_per_axis", "acc_burst_duration_s", "meanVeDBA", "meanODBA" )
@@ -176,17 +172,24 @@ found_dates <- lapply(event_DBAs, function(x){
   diagnostic <- x %>% 
     mutate(date = date(as.POSIXct(timestamp, origin = "1970-01-01", tz = "UTC"))) %>% 
     group_by(date) %>% 
-    summarize(activity = mean(meanVeDBA)) %>% 
-    mutate(active = ifelse(activity > 10, 1, 0),
+    summarize(activity = mean(VeDBA)) %>% 
+    mutate(active = ifelse(activity > a_thresh, 1, 0),
+           # add on whether the activity was high or low yesterday
            check_for_event = lag(active) == T,
+           # and then say whether this is a two day long inactive period
            cumu_check_for_event = ifelse(active == 0 & lag(active == 0), T, F))
   
+  # if the sum of the last two days of DBA is below a_thresh
   if(sum(diagnostic[(nrow(diagnostic)- 1):nrow(diagnostic), "activity"]) < a_thresh){
+    # take the first time DBA was below the threshold for a_thresh
     dod <- diagnostic %>% 
       filter(cumu_check_for_event == T) %>% 
-      slice(1)
-    ddf <- data.frame(individual_id = unique(x$individual_id), char_date = as.character(dod$date))
+      slice(1) %>% 
+      select(date) %>% 
+      deframe()
+    ddf <- data.frame(individual_id = unique(x$individual_id), char_date = as.character(dod))
   }else{ddf <- data.frame(individual_id = unique(x$individual_id), char_date = NA)}
+  
   return(ddf)
 }) %>% reduce(rbind)
 
@@ -200,32 +203,133 @@ missing_dates <- death_dates %>%
   filter(is.na(date) & date(timestamp_end) < Sys.Date()-2)
 
 
-# BurstSamplingScedule(acc_df2)
+
+
+
+
+### moveACC amplitude examination
+# change acc to g using default calibrations
+transfDF <- TransformRawACC(df=acc_df, units="g")
+# FFT
+waveDF <- ACCwave(transfDF, transformedData=T)
+# exploratory plots
+wingBeatsPlot(dfw=waveDF, forclustering= c("amplitude","odbaAvg"))
+plot(waveDF$timestamp, waveDF$amplitude, xlab = "Timestamp", ylab = "Burst amplitude")
+ggplot(waveDF, aes(timestamp, amplitude)) +
+  geom_point(alpha = 0.5) +
+  theme_classic()
+
+ACC_data <- acc_data %>% 
+  drop_na(timestamp)
+
+deaths <- lapply(acc_data, function(x)tryCatch({
+  # for each individual
+  print(unique(x$individual_id))
+  # change acc to g using default calibrations
+  transfDF <- TransformRawACC(df = x, units = "g")
+  # FFT
+  waveDF <- ACCwave(transfDF, transformedData = T)
+  
+  last_active_burst <- waveDF %>% 
+    filter(amplitude > 0.25) %>%
+    arrange(timestamp) %>% 
+    slice(n()) %>% 
+    select(burstID) %>% 
+    deframe()
+  
+  dd <- waveDF %>% 
+    # take the last active burst and the first burst presumed dead
+    slice(last_active_burst:(last_active_burst + 1)) %>% 
+    # take the average timestamp between these bursts
+    mutate(timestamp = as.POSIXct(timestamp, tz = "UTC", origin = "1970-01-01"),
+           change = difftime(timestamp, lag(timestamp), units = "secs"),
+           midpoint = change/2,
+           last_time = timestamp[1]+midpoint[2]) %>% 
+    # take this midpoint as the last timestamp (it died between last active and first not)
+    select(last_time) %>% 
+    slice(1) %>% 
+    deframe()
+  
+  dates <- data.frame(individual_id = unique(x$individual_id), local_identifier = unique(x$individual_local_identifier), death_date = dd)
+  return(dates)
+}, error = function(msg){print(geterrmessage())})) #%>% reduce(rbind)
+# 219402564
+# "Tag numbers not recognized. Make sure the class of column 'tag.local.identifier' or 'tag_local_identifier' is 'integer'"
+# 89349490
+# [1] "<text>:1:7: unexpected '{'\n1: .code {\n          ^"
+
+build <- deaths[lapply(deaths, length) > 1]
+
+build <- lapply(build, function(x){
+  df <- data.frame(individual_id = unique(x$individual_id.individual_id),
+                   local_identifier = unique(x$individual_id.individual_local_identifier),
+                   death_date = unique(x$death_date))
+  return(df)
+}) %>% reduce(rbind)
+
+death_dates <- death_dates %>% 
+  full_join(build)
+
+
+# left over we have the birds with no ACC downloading or that vanished with normal activity
+
+# acc <- acc_data %>%
+#   filter(individual_id == 2141594958) %>% #2141594958
+#   mutate(timestamp = as.POSIXct(timestamp, tz = "UTC", origin = "1970-01-01"))
 # 
-# PlotAccDataTIME(df=acc_df2, bursts = c(100))
-
-
-ggplot(accDf_vedba, aes(timestamp, meanVeDBA, color = meanVeDBA)) +
-  geom_point(alpha = 0.3) +
-  labs(x = "Date", y = "Mean VeDBA per burst") +
-  theme_classic() +
-  theme(legend.position = "none")
-
-diagnostic <- accDf_vedba %>% 
-  mutate(date = date(as.POSIXct(timestamp, origin = "1970-01-01", tz = "UTC"))) %>% 
-  group_by(date) %>% 
-  summarize(activity = mean(meanVeDBA)) %>% 
-  mutate(active = ifelse(activity > 10, 1, 0),
-         check_for_event = lag(active) == T,
-         cumu_check_for_event = ifelse(active == 0 & lag(active == 0), T, F))
-
-diagnostic
-
-ggplot(diagnostic, aes(date, activity, color = activity)) +
-  geom_point(alpha = 0.3) +
-  labs(x = "Date", y = "Mean VeDBA per burst", title = unique(acc_df$individual_id)) +
-  theme_classic() +
-  theme(legend.position = "none")
+# BurstSamplingScedule(acc)
+# 
+# PlotAccDataTIME(df=acc, bursts = c(1))
+# 
+# axesCol = grep("acceleration_axes", names(acc), value=T)
+# if(nrow(acc) > 0 & length(unique(acc[, axesCol]))==1){
+#   accDf_vedba <- acc %>%
+#     select("individual_id", "timestamp", "event_id") %>%
+#     mutate(n_samples_per_axis = NA,
+#            acc_burst_duration_s=NA,
+#            meanVeDBA=NA,
+#            meanODBA=NA)
+# 
+#   accRawCol <- grep("accelerations_raw", names(acc), value=T)
+#   sampFreqCol <- grep("acceleration_sampling_frequency_per_axis", names(acc), value=T)
+# 
+#   for(j in 1:nrow(acc)){
+#     Naxes <- nchar(as.character(acc[j, axesCol]))
+#     accMx <- matrix(as.integer(unlist(strsplit(as.character(acc[j, accRawCol]), " "))), ncol=Naxes, byrow = T)
+#     n_samples_per_axis <- nrow(accMx)
+#     acc_burst_duration_s <- n_samples_per_axis/acc[j, sampFreqCol]
+#     if(nchar(acc[j, axesCol])<3){stop("The ACC data have fewer than 3 axes.")}
+#     VeDBA <- sqrt((accMx[,1]-mean(accMx[,1]))^2 + (accMx[,2]-mean(accMx[,2]))^2 + (accMx[,3]-mean(accMx[,3]))^2)
+#     ODBA <- (accMx[,1]-mean(accMx[,1])) + (accMx[,2]-mean(accMx[,2])) + (accMx[,3]-mean(accMx[,3]))
+# 
+#     accDf_vedba[j, c("n_samples_per_axis", "acc_burst_duration_s", "meanVeDBA", "meanODBA")] <- c(n_samples_per_axis, acc_burst_duration_s, mean(VeDBA, na.rm=T), mean(ODBA, na.rm=T))
+#   }
+# }
+# 
+# diagnostic <- accDf_vedba %>%
+#   mutate(date = date(as.POSIXct(timestamp, origin = "1970-01-01", tz = "UTC"))) %>%
+#   group_by(date) %>%
+#   summarize(activity = mean(meanVeDBA)) %>%
+#   mutate(active = ifelse(activity > a_thresh, 1, 0),
+#          # add on whether the activity was high or low yesterday
+#          check_for_event = lag(active) == T,
+#          # and then say whether this is a two day long inactive period
+#          cumu_check_for_event = ifelse(active == 0 & lag(active == 0), T, F))
+# 
+# 
+# ggplot(accDf_vedba, aes(timestamp, meanVeDBA, color = meanVeDBA)) +
+#   geom_point(alpha = 0.3) +
+#   labs(x = "Date", y = "Mean VeDBA per burst") +
+#   theme_classic() +
+#   theme(legend.position = "none")
+# 
+# diagnostic
+# 
+# ggplot(diagnostic, aes(date, activity, color = activity)) +
+#   geom_point(alpha = 0.3) +
+#   labs(x = "Date", y = "Mean VeDBA per day", title = unique(acc$individual_id)) +
+#   theme_classic() +
+#   theme(legend.position = "none")
 
 
 
@@ -241,7 +345,7 @@ ggplot(diagnostic, aes(date, activity, color = activity)) +
 # if within a certain time of the migration, it died on migration
 # remove the bird
 
-# is the last time the animal moved 50km per day within the last week it transmitted?
+# is the last time the animal moved 50km per day within the last threshold amount of days it transmitted?
 
 # unfinished <- lapply(studies, function(x){
 #   info <- getMovebankAnimals(x, loginStored) %>% 
