@@ -15,7 +15,7 @@
 #                       login = loginStored, removeDuplicatedTimestamps = T)
 # split_gps_bursts(mv, 1, 120)
 
-split_gps_bursts <- function(data.ind, MaxTimeDiff, MinBurstLength){ # Start function SplitGPSBursts
+split_gps_bursts_move <- function(data.ind, MaxTimeDiff, MinBurstLength){
   
   # Load packages and functions where necessary
   if(!require("lubridate")){install.packages("lubridate");library(lubridate)}
@@ -73,4 +73,60 @@ split_gps_bursts <- function(data.ind, MaxTimeDiff, MinBurstLength){ # Start fun
   
   # Save data to the R-environment
   assign("data_mv", data, pos=1)
-} # End function SplitGPSBursts
+} 
+
+
+split_gps_bursts_df <- function(data.ind, MaxTimeDiff, MinBurstLength){ 
+  # Load packages and functions where necessary
+  if(!require("lubridate")){install.packages("lubridate");library(lubridate)}
+  if(!require("tidyverse")){install.packages("tidyverse");library(tidyverse)}
+  
+  #source("nearest.R")
+  
+  #---------------------------------#
+  #- Preparation of the data frame -#
+  #---------------------------------#
+  ind_ID <- ifelse("individual.id" %in% colnames(data.ind), unique(data.ind$individual.id),
+                   unique(data.ind$individual_id))
+  
+  data.ind <- data.ind %>% 
+    arrange(timestamp) %>% 
+    mutate(timeLag = as.numeric(timestamp - lag(timestamp), units = "secs"),
+           # insert an enormous time lag for the first location to remove the NA
+           timeLag = ifelse(is.na(timeLag), 1e5, timeLag),
+           newBurst = ifelse(round(timeLag) <= MaxTimeDiff, F, T),
+           # take the cumulative sum to act as a unique ID for each burst identified in line 37
+           cumu_check_for_event = cumsum(newBurst))
+  
+
+  #--------------------------------------------------------#
+  #- Assign BurstIDs to DataFrame & Reduce data to bursts -#
+  #--------------------------------------------------------#
+  
+  data.ind <- data.ind %>% 
+    group_by(cumu_check_for_event) %>% 
+    # for the bursts, calculate the time difference between the last and first locations
+    mutate(burstLength = ifelse(n()>1, difftime(tail(timestamp,1), head(timestamp, 1), units = "secs"), NA),
+           # add an ID to each burst
+           burstID = cur_group_id()) %>%
+    # remove the bursts that do not meet user-set criteria
+    filter(burstLength > MinBurstLength) %>% 
+    ungroup() %>% 
+    # clean up the sorting columns
+    dplyr::select(-"newBurst", -"cumu_check_for_event")
+  
+  # save it 
+  if(nrow(data.ind)>0){print(paste0("Data for ", ind_ID," contain only bursts and each burst has a unique identifier."), 
+                             quote = F)}else{print(paste0(ind_ID," has no bursts meeting the defined criteria."), quote = F)}
+  
+  
+  #--------------------------------------------#
+  #- Save data frame and print end-statements -#
+  #--------------------------------------------#
+  
+  # Save data to the R-environment
+  #assign("gps_bursts_df", data.ind, pos=1)
+  return(data.ind)
+}
+
+
