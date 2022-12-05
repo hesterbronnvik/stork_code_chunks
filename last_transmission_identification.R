@@ -16,9 +16,9 @@ setwd("C:/Users/hbronnvik/Documents/stork_code_chunks")
 load("C:/Users/hbronnvik/Documents/loginStored.rdata")
 studies <- c(24442409, 212096177, 76367850, 21231406, 1176017658, 173641633)
 d_thresh <- 120*24*60*60 # the number of seconds in a day threshold for defining having died
-a_thresh <- 10*2 # the average activity a bird has to be below to be dead x days 
+a_thresh <- 0.25 # the average activity a bird has to be below to be dead
 
-# the files that were just created containing the location data of all adults classified 
+# the files that were created containing the location data of all adults classified 
 # as migrating if moving more than m_thresh in a day and given north or south
 # down sampled to 15 minute intervals
 clean_files <- list.files("C:/Users/hbronnvik/Documents/storkSSFs/clean_data/", pattern = "migration", full.names = T)
@@ -38,67 +38,20 @@ found_birds <- found_birds %>%
 ## identify individuals that died on migration
 
 # find the last date of the birds' transmissions
-last_known <- lapply(studies, function(x){
-  info <- getMovebankAnimals(x, loginStored) %>% 
-    filter(sensor_type_id == 653 & individual_id %in% found_birds$individual.id)
-  return(info)
-}) %>% reduce(rbind) %>% 
-  select(individual_id, death_comments, timestamp_end, local_identifier)
-
-# for birds that have death comments containing a digit date, extract that information
-patterns <- c("(20)[0-9][0-9][[:punct:]]\\d{1,2}[[:punct:]]\\d{1,2}", # yyyy mm dd
-              "\\d{1,2}[[:punct:]]\\d{1,2}[[:punct:]](20)[0-9][0-9]", # dd mm yy, mm dd yyyy, d m yyyy, m d yyyy
-              "[0-9]{2}[[:punct:]][0-9]{2}[[:punct:]][0-9]{2}") # dd mm yy
-
-death_dates <- last_known %>% 
-  # remove km distances because they do not parse but m may be valid 
-  mutate(death_comments = sub("Sept |Sept\\. ", "September ", gsub("\\d{1,2}( km|km)", "", death_comments))) %>% 
-  rowwise() %>% 
-  # extract dates
-  mutate(char_date = gsub("\\.", "-", str_extract(death_comments, patterns[str_detect(death_comments, patterns)])[1]),
-         # format the dates
-         date = parse_date_time(char_date, orders = c("%d-%m-%Y", "%Y-%m-%d"), tz = "UTC"),
-         # be careful of mdy and clean up two digit dates
-         date = as.POSIXct(ifelse(length(grep("/", char_date)) == 1, parse_date_time(char_date, "%m/%d/%Y", tz = "UTC"), 
-                                  ifelse(nchar(char_date) == 8, parse_date_time(char_date, "%d-%m-%y", tz = "UTC"), date)),
-                           tz = "UTC", origin = "1970-01-01")) %>% 
-  ungroup()
-
-death_dates <- death_dates %>% 
-  rowwise() %>% 
-  # the dates that have months
-  mutate(date = as.POSIXct(ifelse(is.na(date), parse_date_time(death_comments, "%d %b %y", tz = "UTC"), date), tz = "UTC", origin = "1970-01-01"))
-
-# give up and do the last group manually because writing code for each typo is too onerous
-deaths <- data.frame(individual_id = c(78032151, 1173989698, 218609200, 173666935, 23465786, 23466747, 24564548, 1176048179, 1573095923, 1576780467, 1576789367, 2165039729),
-                     date = c("2015-09-08", "2020-09-12", "2015-08-03", "2017-06-27", "2015-05-31", "2015-01-24", "2015-02-03", "2021-04-01", "2021-09-11", "2021-09-01", "2021-09-01", "2022-08-23"))
-
-death_dates <- death_dates %>% 
-  rowwise() %>% 
-  mutate(date = as.POSIXct(ifelse(individual_id %in% deaths$individual_id, deaths$date[which(deaths$individual_id == individual_id)], date), tz = "UTC", origin = "1970-01-01"))
-
-
-# remove those birds from the search and continue
-missing_dates <- death_dates %>% 
-  filter(is.na(date))
-
-
 # download the ACC reference data
 info <- lapply(studies, function(x){
   info <- getMovebankAnimals(x, loginStored) %>% 
-    filter(sensor_type_id == 2365683 & individual_id %in% missing_dates$individual_id) %>% 
+    filter(sensor_type_id == 2365683 & individual_id %in% unique(found_birds$individual.id)) %>% 
     select("individual_id", "timestamp_start", "timestamp_end") %>% 
     mutate(pull_start = paste0(gsub("[[:punct:]]| ", "", as.POSIXct(sub(".000", "", timestamp_end), tz = "UTC", origin = "1970-01-01")-d_thresh), "000"),
            study = x)
   
 }) %>% reduce(rbind)
 
-# acc_df <- getMovebankNonLocationData(study = 212096177, animalName = 219397733, sensorID=2365683,  login=loginStored)
-# x <- 5 # 42
 acc_data <- lapply(1:nrow(info), function(x)tryCatch({
   df <- info[x,]
   # download the ACC data for each individual
-  acc_df <- getMovebankNonLocationData(study = df$study, animalName = df$individual_id,
+  acc_df <- getMovebankNonLocationData(study = df$study, animalName = 173673531,
                                        sensorID=2365683, timestamp_start = info$pull_start[x],
                                        login=loginStored)
   # remove the inconsistent column to allow row binding
@@ -126,101 +79,18 @@ acc_data <- lapply(1:nrow(info), function(x)tryCatch({
 load("C:/Users/hbronnvik/Documents/storkSSFs/acc_data/acc_94ids_31.10.2022.RData")
 
 
-todo <- unique(acc_data$individual_id[!is.na(acc_data$timestamp)])
-todo <- todo[todo %in% missing_dates$individual_id[which(date(missing_dates$timestamp_end) < date(Sys.Date() - 3))]]
-start_time <- Sys.time()
-# for each individual in missing dates, calculate the DBA row wise and store it
-event_DBAs <- lapply(todo, function(x)tryCatch({
-  acc <- acc_data %>% 
-    filter(individual_id == x)
-  
-  accRawCol <- grep("accelerations_raw", names(acc), value=T)
-  sampFreqCol <- grep("acceleration_sampling_frequency_per_axis", names(acc), value=T)
-  axesCol = grep("acceleration_axes", names(acc), value=T)
-  
-  if(nrow(acc) > 0 & length(unique(acc[, axesCol]))==1){
-    VeDBA <- lapply(1:nrow(acc), function(x){
-      
-      if(nchar(acc[x, axesCol])<3){stop("The ACC data have fewer than 3 axes.")}
-      accMx <- matrix(as.integer(unlist(strsplit(as.character(acc[x, accRawCol]), " "))), ncol=3, byrow = T)
-      n_samples_per_axis <- nrow(accMx)
-      acc_burst_duration_s <- n_samples_per_axis/acc[x, sampFreqCol]
-      VeDBA <- sqrt((accMx[,1]-mean(accMx[,1]))^2 + (accMx[,2]-mean(accMx[,2]))^2 + (accMx[,3]-mean(accMx[,3]))^2)
-      ODBA <- (accMx[,1]-mean(accMx[,1])) + (accMx[,2]-mean(accMx[,2])) + (accMx[,3]-mean(accMx[,3]))
-      DBA <- mean(VeDBA)
-      return(DBA)
-    }) %>% reduce(rbind)
-    
-    acc$VeDBA <- VeDBA
-  }
-
-  return(acc)
-}, error = function(msg){
-  accDf_vedba <- data.frame(matrix(NA, nrow = 1, ncol = 6))
-  colnames(accDf_vedba) <- c("timestamp", "event_id", "n_samples_per_axis", "acc_burst_duration_s", "meanVeDBA", "meanODBA" )
-  accDf_vedba$individual_id <- x
-  return(accDf_vedba)})
-)
-Sys.time() - start_time
-
-# remove the empty elements (axes fewer than 3)
-event_DBAs <- event_DBAs[lapply(event_DBAs,nrow) > 1]
-
-# using the threshold set above, determine the inactivity of each individual
-# if the animal is presumed dead, return the first day of inactivity 
-found_dates <- lapply(event_DBAs, function(x){
-  diagnostic <- x %>% 
-    mutate(date = date(as.POSIXct(timestamp, origin = "1970-01-01", tz = "UTC"))) %>% 
-    group_by(date) %>% 
-    summarize(activity = mean(VeDBA)) %>% 
-    mutate(active = ifelse(activity > a_thresh, 1, 0),
-           # add on whether the activity was high or low yesterday
-           check_for_event = lag(active) == T,
-           # and then say whether this is a two day long inactive period
-           cumu_check_for_event = ifelse(active == 0 & lag(active == 0), T, F))
-  
-  # if the sum of the last two days of DBA is below a_thresh
-  if(sum(diagnostic[(nrow(diagnostic)- 1):nrow(diagnostic), "activity"]) < a_thresh){
-    # take the first time DBA was below the threshold for a_thresh
-    dod <- diagnostic %>% 
-      filter(cumu_check_for_event == T) %>% 
-      slice(1) %>% 
-      select(date) %>% 
-      deframe()
-    ddf <- data.frame(individual_id = unique(x$individual_id), char_date = as.character(dod))
-  }else{ddf <- data.frame(individual_id = unique(x$individual_id), char_date = NA)}
-  
-  return(ddf)
-}) %>% reduce(rbind)
-
-# add these estimated dates to the rest
-death_dates <- death_dates %>% 
-  rowwise() %>% 
-  mutate(date = as.POSIXct(ifelse(individual_id %in% found_dates$individual_id, found_dates$char_date[which(found_dates$individual_id == individual_id)], date), tz = "UTC", origin = "1970-01-01"))
-
-# move on without them
-missing_dates <- death_dates %>% 
-  filter(is.na(date) & date(timestamp_end) < Sys.Date()-2)
-
-
-
-
-
-
 ### moveACC amplitude examination
 # change acc to g using default calibrations
-transfDF <- TransformRawACC(df=acc_df, units="g")
-# FFT
-waveDF <- ACCwave(transfDF, transformedData=T)
-# exploratory plots
-wingBeatsPlot(dfw=waveDF, forclustering= c("amplitude","odbaAvg"))
-plot(waveDF$timestamp, waveDF$amplitude, xlab = "Timestamp", ylab = "Burst amplitude")
-ggplot(waveDF, aes(timestamp, amplitude)) +
-  geom_point(alpha = 0.5) +
-  theme_classic()
+# transfDF <- TransformRawACC(df=acc_df, units="g")
+# # FFT
+# waveDF <- ACCwave(transfDF, transformedData=T)
+# # exploratory plots
+# wingBeatsPlot(dfw=waveDF, forclustering= c("amplitude","odbaAvg"))
+# plot(waveDF$timestamp, waveDF$amplitude, xlab = "Timestamp", ylab = "Burst amplitude")
+# ggplot(waveDF, aes(timestamp, amplitude)) +
+#   geom_point(alpha = 0.5) +
+#   theme_classic()
 
-ACC_data <- acc_data %>% 
-  drop_na(timestamp)
 
 deaths <- lapply(acc_data, function(x)tryCatch({
   # for each individual
@@ -230,8 +100,9 @@ deaths <- lapply(acc_data, function(x)tryCatch({
   # FFT
   waveDF <- ACCwave(transfDF, transformedData = T)
   
+  # find the last burst above a given threshold of activity
   last_active_burst <- waveDF %>% 
-    filter(amplitude > 0.25) %>%
+    filter(amplitude > a_thresh) %>%
     arrange(timestamp) %>% 
     slice(n()) %>% 
     select(burstID) %>% 
@@ -258,18 +129,17 @@ deaths <- lapply(acc_data, function(x)tryCatch({
 # 89349490
 # [1] "<text>:1:7: unexpected '{'\n1: .code {\n          ^"
 
-build <- deaths[lapply(deaths, length) > 1]
+acc_deaths <- deaths[lapply(deaths, length) > 1]
 
-build <- lapply(build, function(x){
+acc_deaths <- lapply(acc_deaths, function(x){
   df <- data.frame(individual_id = unique(x$individual_id.individual_id),
                    local_identifier = unique(x$individual_id.individual_local_identifier),
                    death_date = unique(x$death_date))
   return(df)
-}) %>% reduce(rbind)
+}) %>% reduce(rbind) %>% 
+  mutate(death_date = as.POSIXct(ifelse(between(date(death_date), runtime -11, runtime) | death_date > Sys.Date(), NA, death_date), tz = "UTC", origin = "1970-01-01"))
 
-death_dates <- death_dates %>% 
-  full_join(build)
-
+saveRDS(acc_deaths, file = paste0("C:/Users/hbronnvik/Documents/storkSSFs/estimated_death_dates_", Sys.Date(), ".rds"))
 
 # left over we have the birds with no ACC downloading or that vanished with normal activity
 
