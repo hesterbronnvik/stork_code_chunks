@@ -114,16 +114,24 @@ acc_data <- acc_data[sapply(acc_data, nrow) > 1]
 #   saveRDS(x, file = paste0("C:/Users/hbronnvik/Documents/storkSSFs/acc_data/acc_", unique(x$individual_id), Sys.Date(), ".rds"))
 # })
 acc_files <- list.files("C:/Users/hbronnvik/Documents/storkSSFs/acc_data/", pattern = "2022-12-12", full.names = T) # each ID's data
-
+acc_m <- read.csv("C:/Users/hbronnvik/Documents/storkSSFs/acc_deaths_221213.csv", header = F) %>% 
+  rename(death_date = V1,
+         individual_id = V2,
+         local_identifier = V3,
+         comment = V4)
 # if there is a difference in GPS & ACC end_timestamp, choose
 # DBA?
 start_time <- Sys.time()
-acc_deaths <- lapply(1:length(acc_files), function(x){
-  # load the data, reduce size, and remove misreads and pre-tagging/pre-fledging low DBA (within a week of deployment)
+acc_deaths <- lapply(8:length(acc_files), function(x){
+  # load the data and remove misreads and pre-tagging/pre-fledging low DBA (within a week of deployment)
   acc <- acc_files[x] %>% 
     readRDS() %>% 
-    filter(timestamp > (max(timestamp) - months(12)) & timestamp < Sys.Date() & timestamp > (as.POSIXct(info$timestamp_start[which(info$individual_id == unique(individual_id))], tz = "UTC") + days(7)))
-
+    filter(timestamp < Sys.Date() & timestamp > (as.POSIXct(info$timestamp_start[which(info$individual_id == unique(individual_id))], tz = "UTC") + days(7))) %>% 
+    mutate(index = 1:n())
+  # filter the data to reduce memory burden
+  indexer <- (nrow(acc) - 35000):nrow(acc)
+  acc <- acc %>% 
+    filter(index %in% indexer)
     
   if(nrow(acc) > 1){
     # check the difference between GPS and ACC time ranges
@@ -133,40 +141,38 @@ acc_deaths <- lapply(1:length(acc_files), function(x){
       deframe()
     
     end_diff <- abs(difftime(max(acc$timestamp), as.POSIXct(sub(".000", "", gps_end), tz = "UTC"), units = "days"))
-
     # if there is a time difference larger than a week, skip it and determine death in a later step
-    # unless the ACC has the greater amount of data, then use ACC (presumably more accurate than GPS)
     if(end_diff < 7){
-      # calculate VeDBA rowwise
-      DBA <- lapply(1:nrow(acc), function(x){
-        accRawCol <- grep("accelerations_raw", names(acc), value=T)
+      # set tag sensitivity
+      if(as.numeric(unique(acc$tag_local_identifier)) < 2241){sensitive <- data.frame(TagID = as.numeric(unique(acc$tag_local_identifier)), sensitivity = "low")}
+      # transform the raw ACC data into g
+      acc <- TransformRawACC(df = acc, sensitivity.settings = sensitive, units = "g")
+      # extract each axis' values rowwise and use a rolling window to calculate sd of each 10 bursts
+      acc_sep <- lapply(1:nrow(acc), function(x){
+        accTCol <- grep("accelerationTransformed", names(acc), value=T)
         sampFreqCol <- grep("acceleration_sampling_frequency_per_axis", names(acc), value=T)
         axesCol = grep("acceleration_axes", names(acc), value=T)
-        accMx <- matrix(as.integer(unlist(strsplit(as.character(acc[x, accRawCol]), " "))), ncol=3, byrow = T)
-        n_samples_per_axis <- nrow(accMx)
-        acc_burst_duration_s <- n_samples_per_axis/acc[x, sampFreqCol]
-        avg_VeDBA <- mean(sqrt((accMx[,1]-mean(accMx[,1]))^2 + (accMx[,2]-mean(accMx[,2]))^2 + (accMx[,3]-mean(accMx[,3]))^2))
-        return(avg_VeDBA)
+        accMx <- matrix(as.numeric(unlist(strsplit(as.character(acc[x, accTCol]), " "))), ncol=3, byrow = T)
+        V1 <- mean(na.omit(runner(accMx[,1], sd, k = 10)))
+        V2 <- mean(na.omit(runner(accMx[,2], sd, k = 10)))
+        V3 <- mean(na.omit(runner(accMx[,3], sd, k = 10)))
+        V <- data.frame(V1 = V1, V2 = V2, V3 = V3, timestamp = acc$timestamp[x])
+        return(V)
       }) %>% reduce(rbind)
-      
-      acc <- acc %>% 
-        mutate(VeDBA = DBA[,1])
-      
-      # run a rolling window across the VeDBA calculating standard deviation
-      # then select the first time with a deviation of less than 1 and save it
-      poi <- acc %>% 
-        mutate(rolling_stdev = runner(VeDBA, sd, k = 10)) %>% 
-        # discard the first 100 values because the window finds small values here as an artifact
-        slice(10:n()) %>% 
-        filter(rolling_stdev < a_thresh) %>% 
-        select(timestamp, individual_id, individual_local_identifier) %>% 
+      # select the first instance of low ACC trace sd and save
+      poi <- acc_sep %>% 
+        filter(V1 < 0.001 & V2 < 0.0015 & V3 < 0.001) %>% 
         arrange(timestamp) %>% 
         slice(1) %>% 
-        mutate(comment = "death classified by ACC")
-      # ggplot(poi, aes(timestamp, rolling_stdev)) +
+        mutate(individual_id = unique(acc$individual_id),
+               individual_local_identifier = unique(acc$individual_local_identifier),
+               loss = ifelse(timestamp > (max(acc$timestamp) - days(1)), "disappearance", "death"), 
+               comment = paste0(loss, " classified by ACC")) %>% 
+        select(timestamp, individual_id, individual_local_identifier, comment)
+      # ggplot(acc, aes(timestamp, VeDBA)) +
       #   geom_point() +
-      #   geom_segment(aes(x=timestamp, xend=timestamp, y=0, yend=rolling_stdev)) +
-      #   geom_point(data = poi %>% filter(rolling_stdev < a_thresh), color = "red") +
+      #   geom_segment(aes(x=timestamp, xend=timestamp, y=0, yend=VeDBA)) +
+      #   geom_vline(xintercept = poi$timestamp, color = "red") +
       #   labs(title = unique(acc$individual_local_identifier)) +
       #   theme_classic()
       if(nrow(poi) == 1){print(paste0(unique(acc$individual_local_identifier), " died on ", date(poi$timestamp), "."))
@@ -174,7 +180,7 @@ acc_deaths <- lapply(1:length(acc_files), function(x){
         write.table(poi, file = "C:/Users/hbronnvik/Documents/storkSSFs/acc_deaths_221213.csv", sep = ",",
                     append = TRUE, quote = FALSE,
                     col.names = FALSE, row.names = FALSE)
-        return(poi)}else{print(paste0(unique(acc$individual_local_identifier), " did not die ", "."))
+        return(poi)}else{print(paste0(unique(acc$individual_local_identifier), " did not die", "."))
           poi <- data.frame(timestamp = NA, individual_id = unique(acc$individual_id), individual_local_identifier = unique(acc$individual_local_identifier), comment = "no death classified by ACC")
           write.table(poi, file = "C:/Users/hbronnvik/Documents/storkSSFs/acc_deaths_221213.csv", sep = ",",
                       append = TRUE, quote = FALSE,
@@ -194,7 +200,7 @@ saveRDS(acc_deaths, file = paste0("C:/Users/hbronnvik/Documents/storkSSFs/acc_de
 
 # see some estimates
   # load the data and reduce size
-  acc <- acc_files[2] %>% 
+  acc <- acc_files[9] %>% 
     readRDS() %>% 
     filter(timestamp > (max(timestamp) - months(12)) & timestamp < Sys.Date())
   
@@ -209,32 +215,37 @@ saveRDS(acc_deaths, file = paste0("C:/Users/hbronnvik/Documents/storkSSFs/acc_de
     
     print(paste0(unique(acc$individual_local_identifier), " has a sensor end time disparity of ", round(as.numeric(end_diff), digits = 2), " days."))
     
-      acc_sep <- lapply(1:nrow(acc), function(x){
-        accRawCol <- grep("accelerations_raw", names(acc), value=T)
-        sampFreqCol <- grep("acceleration_sampling_frequency_per_axis", names(acc), value=T)
-        axesCol = grep("acceleration_axes", names(acc), value=T)
-        accMx <- matrix(as.integer(unlist(strsplit(as.character(acc[x, accRawCol]), " "))), ncol=3, byrow = T)
-        n_samples_per_axis <- nrow(accMx)
-        acc_burst_duration_s <- n_samples_per_axis/acc[x, sampFreqCol]
-        avg_VeDBA <- mean(sqrt((accMx[,1]-mean(accMx[,1]))^2 + (accMx[,2]-mean(accMx[,2]))^2 + (accMx[,3]-mean(accMx[,3]))^2))
-        return(avg_VeDBA)
-      }) %>% reduce(rbind)
-      
-      acc <- acc %>% 
-        mutate(VeDBA = acc_sep[,1])
-      
-poi <- acc %>% 
-  filter(VeDBA > mean(VeDBA)) %>% 
-  arrange(desc(timestamp)) %>% 
-  slice(1) %>% 
-  mutate(loss = ifelse(timestamp > (max(acc$timestamp) - days(1)), "disappearance", "death"), 
-         comment = paste0(loss, " classified by ACC")) %>% 
-  select(timestamp, individual_id, individual_local_identifier, comment)
-      
+    # calculate VeDBA rowwise
+    DBA <- lapply(1:nrow(acc), function(x){
+      accRawCol <- grep("accelerations_raw", names(acc), value=T)
+      sampFreqCol <- grep("acceleration_sampling_frequency_per_axis", names(acc), value=T)
+      axesCol = grep("acceleration_axes", names(acc), value=T)
+      accMx <- matrix(as.integer(unlist(strsplit(as.character(acc[x, accRawCol]), " "))), ncol=3, byrow = T)
+      n_samples_per_axis <- nrow(accMx)
+      acc_burst_duration_s <- n_samples_per_axis/acc[x, sampFreqCol]
+      avg_VeDBA <- mean(sqrt((accMx[,1]-mean(accMx[,1]))^2 + (accMx[,2]-mean(accMx[,2]))^2 + (accMx[,3]-mean(accMx[,3]))^2))
+      return(avg_VeDBA)
+    }) %>% reduce(rbind)
+    
+    acc <- acc %>% 
+      mutate(VeDBA = DBA[,1])
+    
+    # run a rolling window across the VeDBA calculating standard deviation
+    # then select the first time with a deviation of less than 1 and save it
+    poi <- acc %>% 
+      mutate(rolling_stdev = runner(VeDBA, sd, k = 10)) %>% 
+      # discard the first 100 values because the window finds small values here as an artifact
+      slice(10:n()) %>% 
+      filter(rolling_stdev < a_thresh) %>% 
+      select(timestamp, individual_id, individual_local_identifier) %>% 
+      arrange(timestamp) %>% 
+      slice(1) %>% 
+      mutate(comment = "death classified by ACC")
+
 ggplot(acc, aes(timestamp, VeDBA)) +
   geom_point() +
   geom_segment(aes(x=timestamp, xend=timestamp, y=0, yend=VeDBA)) +
-  geom_point(data = acc %>% filter(VeDBA > mean(VeDBA)), color = "red") +
+  # geom_point(data = acc %>% filter(VeDBA > mean(VeDBA)), color = "red") +
   geom_vline(xintercept = poi$timestamp, color = "red") +
   labs(title = unique(acc$individual_local_identifier)) +
   theme_classic()
