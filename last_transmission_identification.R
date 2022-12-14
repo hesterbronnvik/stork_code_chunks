@@ -64,7 +64,7 @@ found_birds <- found_birds %>%
 info <- lapply(studies, function(x){
   info <- getMovebankAnimals(x, loginStored) %>% 
     filter(sensor_type_id == 2365683 & individual_id %in% unique(found_birds$individual.id)) %>% 
-    select("individual_id","local_identifier", "tag_local_identifier", "timestamp_start", "timestamp_end") %>%
+    # select("individual_id","local_identifier", "tag_local_identifier", "timestamp_start", "timestamp_end") %>%
     mutate(pull_start = paste0(gsub("[[:punct:]]| ", "", as.POSIXct(sub(".000", "", timestamp_end), tz = "UTC", origin = "1970-01-01")-d_thresh), "000"),
            study = x)
   return(info)
@@ -101,7 +101,7 @@ acc_data <- lapply(1:nrow(info), function(x)tryCatch({
   return(acc_df)
 })) #%>% reduce(rbind) 
 # registerDoSEQ()
-step1.5_time <- Sys.time() - start_time
+Sys.time() - start_time
 missing_acc <- acc_data[sapply(acc_data, nrow) == 1] %>% 
   reduce(rbind) %>% 
   select(individual_id) %>% 
@@ -114,20 +114,22 @@ acc_data <- acc_data[sapply(acc_data, nrow) > 1]
 #   saveRDS(x, file = paste0("C:/Users/hbronnvik/Documents/storkSSFs/acc_data/acc_", unique(x$individual_id), Sys.Date(), ".rds"))
 # })
 acc_files <- list.files("C:/Users/hbronnvik/Documents/storkSSFs/acc_data/", pattern = "2022-12-12", full.names = T) # each ID's data
-acc_m <- read.csv("C:/Users/hbronnvik/Documents/storkSSFs/acc_deaths_221213.csv", header = F) %>% 
-  rename(death_date = V1,
-         individual_id = V2,
-         local_identifier = V3,
-         comment = V4)
-# if there is a difference in GPS & ACC end_timestamp, choose
-# DBA?
+acc_m <- read.csv("C:/Users/hbronnvik/Documents/storkSSFs/acc_deaths_221214.csv", header = T, row.names = F) %>% 
+  drop_na(V2)
+
+acc_names <- gsub("2022-12-12.rds", "", gsub("C:/Users/hbronnvik/Documents/storkSSFs/acc_data/acc_", "", acc_files))
+done <- acc_m$V2
+todo <- acc_names[!acc_names %in% done]
+todo <- sapply(todo, function(x){grep(x, acc_files)})
+
+library(parallel)
 start_time <- Sys.time()
-acc_deaths <- lapply(8:length(acc_files), function(x){
+acc_deaths <- lapply(1:length(acc_files), function(x){
   # load the data and remove misreads and pre-tagging/pre-fledging low DBA (within a week of deployment)
   acc <- acc_files[x] %>% 
     readRDS() %>% 
-    filter(timestamp < Sys.Date() & timestamp > (as.POSIXct(info$timestamp_start[which(info$individual_id == unique(individual_id))], tz = "UTC") + days(7))) %>% 
-    mutate(index = 1:n())
+    filter(timestamp < Sys.Date() & timestamp > (as.POSIXct(info$timestamp_start[which(info$individual_id == unique(individual_id))][1], tz = "UTC") + days(7))) %>% 
+    dplyr::mutate(index = 1:n())
   # filter the data to reduce memory burden
   indexer <- (nrow(acc) - 35000):nrow(acc)
   acc <- acc %>% 
@@ -137,76 +139,117 @@ acc_deaths <- lapply(8:length(acc_files), function(x){
     # check the difference between GPS and ACC time ranges
     gps_end <- info %>% 
       filter(individual_id == unique(acc$individual_id)) %>% 
-      select(timestamp_end) %>% 
+      dplyr::select(timestamp_end) %>% 
+      slice(1) %>% 
       deframe()
     
     end_diff <- abs(difftime(max(acc$timestamp), as.POSIXct(sub(".000", "", gps_end), tz = "UTC"), units = "days"))
     # if there is a time difference larger than a week, skip it and determine death in a later step
     if(end_diff < 7){
       # set tag sensitivity
-      if(as.numeric(unique(acc$tag_local_identifier)) < 2241){sensitive <- data.frame(TagID = as.numeric(unique(acc$tag_local_identifier)), sensitivity = "low")}
+      if(as.numeric(unique(acc$tag_local_identifier))[1] < 2241){sensitive <- data.frame(TagID = as.numeric(unique(acc$tag_local_identifier)), sensitivity = "low")}
       # transform the raw ACC data into g
       acc <- TransformRawACC(df = acc, sensitivity.settings = sensitive, units = "g")
-      # extract each axis' values rowwise and use a rolling window to calculate sd of each 10 bursts
-      acc_sep <- lapply(1:nrow(acc), function(x){
+      # extract each axis' values row-wise and use a rolling window to calculate sd of each 10 bursts
+      cl <- makeCluster(detectCores()-6)
+      clusterExport(cl, "acc", envir = environment())
+      acc_sep <- parLapply(cl, 1:nrow(acc), function(x){
+        library(runner)
         accTCol <- grep("accelerationTransformed", names(acc), value=T)
         sampFreqCol <- grep("acceleration_sampling_frequency_per_axis", names(acc), value=T)
         axesCol = grep("acceleration_axes", names(acc), value=T)
         accMx <- matrix(as.numeric(unlist(strsplit(as.character(acc[x, accTCol]), " "))), ncol=3, byrow = T)
-        V1 <- mean(na.omit(runner(accMx[,1], sd, k = 10)))
-        V2 <- mean(na.omit(runner(accMx[,2], sd, k = 10)))
-        V3 <- mean(na.omit(runner(accMx[,3], sd, k = 10)))
-        V <- data.frame(V1 = V1, V2 = V2, V3 = V3, timestamp = acc$timestamp[x])
+        X <- mean(na.omit(runner(accMx[,1], sd, k = 10)))
+        Y <- mean(na.omit(runner(accMx[,2], sd, k = 10)))
+        Z <- mean(na.omit(runner(accMx[,3], sd, k = 10)))
+        V <- data.frame(X = X, Y = Y, Z = Z, timestamp = acc$timestamp[x])
         return(V)
       }) %>% reduce(rbind)
+      stopCluster(cl)
+      
       # select the first instance of low ACC trace sd and save
       poi <- acc_sep %>% 
-        filter(V1 < 0.001 & V2 < 0.0015 & V3 < 0.001) %>% 
-        arrange(timestamp) %>% 
-        slice(1) %>% 
-        mutate(individual_id = unique(acc$individual_id),
-               individual_local_identifier = unique(acc$individual_local_identifier),
-               loss = ifelse(timestamp > (max(acc$timestamp) - days(1)), "disappearance", "death"), 
-               comment = paste0(loss, " classified by ACC")) %>% 
-        select(timestamp, individual_id, individual_local_identifier, comment)
-      # ggplot(acc, aes(timestamp, VeDBA)) +
-      #   geom_point() +
-      #   geom_segment(aes(x=timestamp, xend=timestamp, y=0, yend=VeDBA)) +
-      #   geom_vline(xintercept = poi$timestamp, color = "red") +
-      #   labs(title = unique(acc$individual_local_identifier)) +
-      #   theme_classic()
-      if(nrow(poi) == 1){print(paste0(unique(acc$individual_local_identifier), " died on ", date(poi$timestamp), "."))
+        # remove night hours when the birds have low activity regardless of death
+        filter(hour(timestamp) %in% 8:20) %>% 
+        # find the average daytime activity for the bird
+        dplyr::mutate(avgX = mean(X),
+               avgY = mean(Y),
+               avgZ = mean(Z)) %>% 
+        group_by(date(timestamp)) %>% 
+        # find the average daytime activity for the day
+        dplyr::mutate(avg_dayX = mean(X),
+               avg_dayY = mean(Y),
+               avg_dayZ = mean(Z)) %>% 
+        ungroup() %>% 
+        dplyr::mutate(criterion = ifelse(X < 0.001 & lag(X) < 0.001 & Y < 0.0015 & lag(Y) < 0.0015 & Z < 0.001 & lag(Z) < 0.001, T, F)) %>% 
+        # select the first time the animal was below average activity all day
+        filter(avg_dayX < avgX & avg_dayY < avgY & avg_dayZ < avgZ) %>% 
+        # and had almost no change in activity over a 10 burst time window
+        filter(criterion == T) %>% 
+        dplyr::arrange(timestamp) %>% 
+        slice(1) 
+      
+      if(nrow(poi == 1)){
+        # using that date, take the time the animal had almost no change in activity
+        poi2 <- acc_sep %>% 
+          filter(date(timestamp) %in% c(date(poi$timestamp), (date(poi$timestamp) - days(1)))) %>% 
+          filter(X < 0.001 & Y < 0.0015 & Z < 0.001) %>% 
+          dplyr::arrange(timestamp) %>% 
+          slice(1)%>% 
+          dplyr::mutate(individual_id = unique(acc$individual_id),
+                 individual_local_identifier = unique(acc$individual_local_identifier),
+                 loss = T, 
+                 comment = "classified by ACC") %>% 
+          dplyr::select(timestamp, individual_id, individual_local_identifier, loss, comment)
+      }else{
+        poi2 <- acc_sep %>% 
+          filter(date(timestamp) %in% c(max(date(timestamp)), (max(date(timestamp)) - days(1)))) %>% 
+          filter(X < 0.001 & Y < 0.0015 & Z < 0.001) %>% 
+          dplyr::arrange(timestamp) %>% 
+          slice(1)%>% 
+          dplyr::mutate(individual_id = unique(acc$individual_id),
+                 individual_local_identifier = unique(acc$individual_local_identifier),
+                 loss = T, 
+                 comment = "classified by ACC") %>% 
+          dplyr::select(timestamp, individual_id, individual_local_identifier, loss, comment)}
+      
+      if(nrow(poi2) == 1){print(paste0(unique(acc$individual_local_identifier), " died on ", date(poi2$timestamp), "."))
         # save the data individual by individual 
-        write.table(poi, file = "C:/Users/hbronnvik/Documents/storkSSFs/acc_deaths_221213.csv", sep = ",",
+        write.table(poi2, file = "C:/Users/hbronnvik/Documents/storkSSFs/acc_deaths_221214.csv", sep = ",",
                     append = TRUE, quote = FALSE,
                     col.names = FALSE, row.names = FALSE)
-        return(poi)}else{print(paste0(unique(acc$individual_local_identifier), " did not die", "."))
-          poi <- data.frame(timestamp = NA, individual_id = unique(acc$individual_id), individual_local_identifier = unique(acc$individual_local_identifier), comment = "no death classified by ACC")
-          write.table(poi, file = "C:/Users/hbronnvik/Documents/storkSSFs/acc_deaths_221213.csv", sep = ",",
+        return(poi2)}else{print(paste0(unique(acc$individual_local_identifier), " did not die", "."))
+          poi <- data.frame(timestamp = NA, individual_id = unique(acc$individual_id), individual_local_identifier = unique(acc$individual_local_identifier), loss = F, comment = "no death classified by ACC")
+          write.table(poi, file = "C:/Users/hbronnvik/Documents/storkSSFs/acc_deaths_221214.csv", sep = ",",
                       append = TRUE, quote = FALSE,
                       col.names = FALSE, row.names = FALSE)
           return(poi)}
     }else{print(paste0(unique(acc$individual_local_identifier), " has a sensor end time disparity of ", round(as.numeric(end_diff), digits = 2), " days."))
-    poi <- data.frame(timestamp = NA, individual_id = unique(acc$individual_id), individual_local_identifier = unique(acc$individual_local_identifier), comment = "sensor time disparity")
-    write.table(poi, file = "C:/Users/hbronnvik/Documents/storkSSFs/acc_deaths_221213.csv", sep = ",",
+    poi <- data.frame(timestamp = NA, individual_id = unique(acc$individual_id), individual_local_identifier = unique(acc$individual_local_identifier), loss = NA, comment = "sensor time disparity")
+    write.table(poi, file = "C:/Users/hbronnvik/Documents/storkSSFs/acc_deaths_221214.csv", sep = ",",
                 append = TRUE, quote = FALSE,
                 col.names = FALSE, row.names = FALSE)
     return(poi)}
   }
 }) %>% reduce(rbind) %>% 
-  mutate(timestamp = as.POSIXct(timestamp, tz = "UTC", origin = "1970-01-01"))
+  dplyr::mutate(timestamp = as.POSIXct(timestamp, tz = "UTC", origin = "1970-01-01"))
 Sys.time() - start_time
 saveRDS(acc_deaths, file = paste0("C:/Users/hbronnvik/Documents/storkSSFs/acc_deaths", Sys.time(), ".rds"))
 
 # see some estimates
   # load the data and reduce size
-  acc <- acc_files[9] %>% 
+  acc <- acc_files[todo[5]] %>% 
     readRDS() %>% 
-    filter(timestamp > (max(timestamp) - months(12)) & timestamp < Sys.Date())
+    filter(timestamp < Sys.Date()) %>% 
+    filter(timestamp > (max(timestamp) - months(12))) %>% 
+    mutate(index = 1:n())
+  # filter the data to reduce memory burden
+  indexer <- (nrow(acc) - 35000):nrow(acc)
+  acc <- acc %>% 
+    filter(index %in% indexer)
   
-
-    # check the difference between GPS and ACC time ranges
-    gps_end <- info %>% 
+  # check the difference between GPS and ACC time ranges
+  gps_end <- info %>% 
       filter(individual_id == unique(acc$individual_id)) %>% 
       select(timestamp_end) %>% 
       deframe()
@@ -215,20 +258,87 @@ saveRDS(acc_deaths, file = paste0("C:/Users/hbronnvik/Documents/storkSSFs/acc_de
     
     print(paste0(unique(acc$individual_local_identifier), " has a sensor end time disparity of ", round(as.numeric(end_diff), digits = 2), " days."))
     
+    
     # calculate VeDBA rowwise
-    DBA <- lapply(1:nrow(acc), function(x){
-      accRawCol <- grep("accelerations_raw", names(acc), value=T)
+    # DBA <- lapply(1:nrow(acc), function(x){
+    #   accRawCol <- grep("accelerations_raw", names(acc), value=T)
+    #   sampFreqCol <- grep("acceleration_sampling_frequency_per_axis", names(acc), value=T)
+    #   axesCol = grep("acceleration_axes", names(acc), value=T)
+    #   accMx <- matrix(as.integer(unlist(strsplit(as.character(acc[x, accRawCol]), " "))), ncol=3, byrow = T)
+    #   n_samples_per_axis <- nrow(accMx)
+    #   acc_burst_duration_s <- n_samples_per_axis/acc[x, sampFreqCol]
+    #   avg_VeDBA <- mean(sqrt((accMx[,1]-mean(accMx[,1]))^2 + (accMx[,2]-mean(accMx[,2]))^2 + (accMx[,3]-mean(accMx[,3]))^2))
+    #   return(avg_VeDBA)
+    # }) %>% reduce(rbind)
+    # 
+    # acc <- acc %>% 
+    #   mutate(VeDBA = DBA[,1])
+    # transform the raw ACC data into g
+    acc <- TransformRawACC(df = acc, sensitivity.settings = sensitive, units = "g")
+    # extract each axis' values rowwise and use a rolling window to calculate sd of each 10 bursts
+    acc_sep <- lapply(1:nrow(acc), function(x){
+      accTCol <- grep("accelerationTransformed", names(acc), value=T)
       sampFreqCol <- grep("acceleration_sampling_frequency_per_axis", names(acc), value=T)
       axesCol = grep("acceleration_axes", names(acc), value=T)
-      accMx <- matrix(as.integer(unlist(strsplit(as.character(acc[x, accRawCol]), " "))), ncol=3, byrow = T)
-      n_samples_per_axis <- nrow(accMx)
-      acc_burst_duration_s <- n_samples_per_axis/acc[x, sampFreqCol]
-      avg_VeDBA <- mean(sqrt((accMx[,1]-mean(accMx[,1]))^2 + (accMx[,2]-mean(accMx[,2]))^2 + (accMx[,3]-mean(accMx[,3]))^2))
-      return(avg_VeDBA)
+      accMx <- matrix(as.numeric(unlist(strsplit(as.character(acc[x, accTCol]), " "))), ncol=3, byrow = T)
+      X <- mean(na.omit(runner(accMx[,1], sd, k = 10)))
+      Y <- mean(na.omit(runner(accMx[,2], sd, k = 10)))
+      Z <- mean(na.omit(runner(accMx[,3], sd, k = 10)))
+      V <- data.frame(X = X, Y = Y, Z = Z, timestamp = acc$timestamp[x])
+      return(V)
     }) %>% reduce(rbind)
     
-    acc <- acc %>% 
-      mutate(VeDBA = DBA[,1])
+# select the first instance of low ACC trace sd and save
+poi <- acc_sep %>% 
+  # remove night hours when the birds have low activity regardless of death
+  filter(hour(timestamp) %in% 8:20) %>% 
+  # find the average daytime activity for the bird
+  mutate(avgX = mean(X),
+         avgY = mean(Y),
+         avgZ = mean(Z)) %>% 
+  group_by(date(timestamp)) %>% 
+  # find the average daytime activity for the day
+  mutate(avg_dayX = mean(X),
+         avg_dayY = mean(Y),
+         avg_dayZ = mean(Z)) %>% 
+  ungroup() %>% 
+  mutate(criterion = ifelse(X < 0.001 & lag(X) < 0.001 & Y < 0.0015 & lag(Y) < 0.0015 & Z < 0.001 & lag(Z) < 0.001, T, F)) %>% 
+  # select the first time the animal was below average activity all day
+  filter(avg_dayX < avgX & avg_dayY < avgY & avg_dayZ < avgZ) %>% 
+  # and had almost no change in activity over a 10 burst time window
+  filter(criterion == T) %>% 
+  arrange(timestamp) %>% 
+  slice(1) 
+# using that date, take the time the animal had almost no change in activity
+poi2 <- acc_sep %>% 
+  filter(date(timestamp) %in% c(date(poi$timestamp), (date(poi$timestamp) - days(1)))) %>% 
+  filter(X < 0.001 & Y < 0.0015 & Z < 0.001) %>% 
+  arrange(timestamp) %>% 
+  slice(1) %>% 
+      mutate(individual_id = unique(acc$individual_id),
+             individual_local_identifier = unique(acc$individual_local_identifier),
+             loss = T, 
+             comment = "classified by ACC") %>% 
+      select(timestamp, individual_id, individual_local_identifier, loss, comment)
+    
+build <- acc_sep %>% 
+  filter(timestamp > "2022-02-13" & timestamp < "2022-02-15") %>% 
+  group_by(date(timestamp)) %>% 
+  # find the average daytime activity for the day
+  mutate(avg_dayX = mean(X),
+         avg_dayY = mean(Y),
+         avg_dayZ = mean(Z)) %>% 
+  ungroup()
+ggplot(build, aes(timestamp, Z)) +
+  geom_line(color = "orange") +
+  geom_line(data = build, aes(timestamp, Y), color = "red") +
+  geom_line(data = build, aes(timestamp, X), color = "blue") +
+  geom_point(data = build %>% filter(X < 0.001 & Y < 0.0015 & Z < 0.001), color = "black") +
+  geom_hline(yintercept = c(poi$avgX, poi$avgY, poi$avgZ)) +
+  geom_line(data = build, aes(timestamp, avg_dayX), lty = 2) +
+  # geom_vline(xintercept = poi$timestamp, lty = 2) +
+  labs(title = unique(acc$individual_local_identifier), y = "standard deviation (g)") +
+  theme_classic()
     
     # run a rolling window across the VeDBA calculating standard deviation
     # then select the first time with a deviation of less than 1 and save it
@@ -251,106 +361,8 @@ ggplot(acc, aes(timestamp, VeDBA)) +
   theme_classic()
 
 
-build <- acc %>% 
-  filter(timestamp > "2019-08-20") %>% 
-  arrange(timestamp) %>% 
-  mutate(change = ifelse(lag(VeDBA) < mean(VeDBA) & VeDBA < mean(VeDBA), F, T))
-
-build$change[1] <- F
-
-build <- build %>% 
-  mutate(timeLag = as.numeric(timestamp - lag(timestamp), units = "secs"),
-       # take the cumulative sum to act as a unique ID for each burst identified in line 37
-     cumu_check_for_event = cumsum(change)) %>% 
-  group_by(cumu_check_for_event) %>% 
-  # for the bursts, calculate the time difference between the last and first locations
-  mutate(burstLength = ifelse(n()>1, difftime(tail(timestamp,1), head(timestamp, 1), units = "secs"), NA),
-         # add an ID to each burst
-         burstID = cur_group_id())
-
-ggplot(build, aes(timestamp, VeDBA)) +
-  geom_point() +
-  geom_segment(aes(x=timestamp, xend=timestamp, y=0, yend=VeDBA)) +
-  geom_point(data = build %>% filter(burstLength == max(burstLength) & VeDBA < mean(VeDBA)), color = "red") +
-  geom_vline(xintercept = poi$timestamp, color = "red") +
-  labs(title = unique(acc$individual_local_identifier)) +
-  theme_classic()
-
-
-check <- data.frame(index = 1:nrow(build), stdev = runner(build$VeDBA, sd, k = 100))
-
-
-
-
 # the previously estimated death dates from GPS data
 gpsd <- readRDS("C:/Users/hbronnvik/Documents/storkSSFs/death_estimates_gps_221206.rds")
-
-### moveACC amplitude examination
-# change acc to g using default calibrations
-# transfDF <- TransformRawACC(df=acc_df, units="g")
-# # FFT
-# waveDF <- ACCwave(transfDF, transformedData=T)
-# # exploratory plots
-# wingBeatsPlot(dfw=waveDF, forclustering= c("amplitude","odbaAvg"))
-# ggplot(waveDF, aes(timestamp, amplitude)) +
-#   geom_point(alpha = 0.5) +
-#   theme_classic()
-deaths <- lapply(1:length(acc_files[1:5]), function(x)tryCatch({
-  acc_df <- readRDS(acc_files[x])
-  # for each individual
-  print(unique(acc_df$individual_id))
-  # add the tag_local_identifier because moveACC functions use it
-  acc_df$tag_local_identifier <- as.integer(info$tag_local_identifier[which(info$individual_id == unique(acc_df$individual_id))])
-  # reduce the number of data to save time (and remove future errors)
-  acc_df <- acc_df %>% 
-    filter(timestamp > (max(acc_df$timestamp) - days(6*30)) & timestamp < Sys.Date())
-  # change acc to g using default calibrations
-  transfDF <- TransformRawACC(df=acc_df, units="g")
-  # FFT
-  waveDF <- ACCwave(transfDF, transformedData=T)
-  # the first day with low activity
-  poi <- waveDF %>% 
-    mutate(datestamp = date(timestamp)) %>% 
-    mutate(grouping = (amplitude + lag(amplitude) + lead(amplitude))/3) %>% 
-    filter(grouping < a_thresh) %>% 
-    arrange(datestamp) %>% 
-    select(datestamp) %>% 
-    slice(1) %>% 
-    deframe()
-  
-  if(length(poi) == 1){
-    # within that identified day, the last burst with above average activity
-    poi2 <- waveDF %>% 
-      filter(date(timestamp) %in% c(poi- days(1), poi)) %>% 
-      filter(amplitude > mean(amplitude)) %>% 
-      select(timestamp, burstID) %>% 
-      slice(n())
-    ggplot(waveDF, aes(timestamp, amplitude)) +
-      geom_point() +
-      geom_segment(aes(x=timestamp, xend=timestamp, y=0, yend=amplitude)) +
-      # geom_vline(xintercept = poi2$timestamp, color = "red") +
-      theme_classic()
-    death <- waveDF %>% 
-      filter(burstID %in% poi2$burstID:(poi2$burstID+1)) %>% 
-      mutate(dod = mean(timestamp)) %>% 
-      select(dod) %>% 
-      slice(1) %>% 
-      deframe()
-    # record the death information
-    acc_death <- data.frame(individual_id = unique(acc_df$individual_id), 
-                            local_identifier = unique(waveDF$individualID), death_date = death,
-                            loss = T, comment = "death classified by ACC amplitude")
-  }else{# record the lack of death information
-    acc_death <- data.frame(individual_id = unique(acc_df$individual_id), 
-                            local_identifier = unique(waveDF$individualID), death_date = NA,
-                            loss = F, comment = "no death classified by ACC amplitude")}
-  # save the data individual by individual because on 32 GB RAM this crashes
-  # write.table(acc_death, file = "acc_deaths_221208.csv", sep = ",",
-  #             append = TRUE, quote = FALSE,
-  #             col.names = FALSE, row.names = FALSE)
-  return(acc_death)
-}, error = function(msg){print(geterrmessage())}))
-
 
 wgs <- CRS("+proj=longlat +datum=WGS84 +no_defs")
 gps_df <- gps_df %>% 
@@ -358,43 +370,6 @@ gps_df <- gps_df %>%
   filter(timestamp > (tail(timestamp, 1)-days(6*30)))
 gps_sf <- st_as_sf(gps_df, coords = c("location.long", "location.lat"), crs = wgs)
 mapview(gps_sf, zcol = "date")
-
-# start_time <- Sys.time()
-# deaths <- lapply(acc_data, function(x)tryCatch({
-#   # for each individual
-#   print(unique(x$individual_id))
-#   # add the tag_local_identifier on because moveACC functions use it
-#   x$tag_local_identifier <- as.integer(info$tag_local_identifier[which(info$individual_id == unique(x$individual_id))])
-#   # change acc to g using default calibrations
-#   transfDF <- TransformRawACC(df = x, units = "g")
-#   # FFT
-#   waveDF <- ACCwave(transfDF, transformedData = T)
-#   
-#   # find the last burst above a given threshold of activity
-#   last_active_burst <- waveDF %>% 
-#     filter(amplitude > a_thresh) %>%
-#     arrange(timestamp) %>% 
-#     slice(n()) %>% 
-#     select(burstID) %>% 
-#     deframe()
-#   
-#   dd <- waveDF %>% 
-#     # take the last active burst and the first burst presumed dead
-#     slice(last_active_burst:(last_active_burst + 1)) %>% 
-#     # take the average timestamp between these bursts
-#     mutate(timestamp = as.POSIXct(timestamp, tz = "UTC", origin = "1970-01-01"),
-#            change = difftime(timestamp, lag(timestamp), units = "secs"),
-#            midpoint = change/2,
-#            last_time = timestamp[1]+midpoint[2]) %>% 
-#     # take this midpoint as the last timestamp (it died between last active and first not)
-#     select(last_time) %>% 
-#     slice(1) %>% 
-#     deframe()
-#   
-#   dates <- data.frame(individual_id = unique(x$individual_id), local_identifier = unique(x$individual_local_identifier), death_date = dd)
-#   return(dates)
-# }, error = function(msg){print(geterrmessage())})) #%>% reduce(rbind)
-# Sys.time() - start_time
 
 acc_deaths <- deaths[lapply(deaths, length) > 1]
 
