@@ -143,6 +143,7 @@ first_ls <- first_ls[lapply(first_ls, nrow) > 10]
 # test 
 late_ls <- late_ls[which(names(late_ls) %in% names(first_ls))]
 
+start_time <- Sys.time()
 first_akdes <- lapply(first_ls, function(x){
   x$index <- 1:nrow(x)
   # create a telemetry object to use the ctmm functions
@@ -197,26 +198,29 @@ late_akdes <- lapply(late_ls, function(x){
   UD <- akde(ind, fit, SP = outlines)
   return(UD)
 })
+Sys.time() - start_time
 
 # combine the adult and juvenile akdes in time
 akdes <- lapply(1:length(names(late_akdes)), function(x){
   # the juvenile akde that matches an adult akde
   id <- which(names(first_akdes) == names(late_akdes)[x])
-  # conversion to a raster of the PDF
-  f <- raster(first_akdes[[id]], DF = "PDF")
-  # using the terra package for reprojection
-  f <- terra::rast(f)
-  f <- terra::project(f, "EPSG:4326")
-  l <- raster(late_akdes[[x]], DF = "PDF")
-  l <- terra::rast(l)
-  l <- terra::project(l, "EPSG:4326")
-  l <- terra::project(l, f)
-  # combining the two akdes
-  fl <- terra::merge(f, l)
-  # adding the date as the name
-  names(fl) <- names(first_akdes)[[id]]
-  return(fl)
+  if(length(id) == 1){# conversion to a raster of the PDF
+    f <- raster(first_akdes[[id]], DF = "PDF")
+    # using the terra package for reprojection
+    f <- terra::rast(f)
+    f <- terra::project(f, "EPSG:4326")
+    l <- raster(late_akdes[[x]], DF = "PDF")
+    l <- terra::rast(l)
+    l <- terra::project(l, "EPSG:4326")
+    l <- terra::project(l, f)
+    # combining the two akdes
+    fl <- terra::merge(f, l)
+    # adding the date as the name
+    names(fl) <- names(first_akdes)[[id]]
+    return(fl)}
 })
+# the hours that have information from both adults and juveniles:
+akdes <- akdes[lapply(akdes, is.null) == F]
 
 only_first <- which(!names(first_akdes) %in% names(late_akdes))
 only_late <- which(!names(late_akdes) %in% names(first_akdes))
@@ -244,6 +248,26 @@ akdes_late <- lapply(1:length(late_akdes[only_late]), function(x){
 })
 
 akdes <- c(akdes, akdes_first, akdes_late)
+# saveRDS(akdes, file = "C:/Users/hbronnvik/Documents/storkSSFs/akdes_combined_2023-01-25.rds")
+
+# plot all of the akdes to see how they move through time  
+# p <- vect(outlines)
+# png(file="%02d.png", width=480, height=480)
+# 
+# for (i in 1:length(akdes)){
+#   par(mar = c(0, 0, 0, 0))
+#   ud <- akdes[[i]]
+#   ud <- subst(ud, 0, NA)
+#   terra::plot(p, main = names(akdes[[i]]))
+#   terra::plot(ud, add = T, buffer = T)
+#   terra::plot(p, add = T)
+# }
+# dev.off()
+# 
+# library(av)
+# library(gtools)
+# imgs <- list.files("C:/Users/hbronnvik/Documents/storkSSFs/jan_ras_plot", full.names = TRUE)
+# av_encode_video(mixedsort(sort(imgs)), framerate = 115, output = "test2.mp4")
 
 library(terra)
 terra::plot(late_akdes[[1]])
@@ -252,8 +276,10 @@ check <- raster(late_akdes[[1]], DF = "PDF")
 check <- rast(check)
 check <- terra::project(check, "EPSG:4326")
 p <- vect(outlines)
+check <- akdes[[6000]]
+check <- akdes[[1904]]
 check <- subst(check, 0, NA)
-terra::plot(p, main = names(late_akdes)[1])
+terra::plot(p, main = names(akdes[[1904]]))
 terra::plot(check, add = T, buffer = T)
 terra::plot(p, add = T)
 
