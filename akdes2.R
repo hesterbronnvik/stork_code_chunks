@@ -140,6 +140,8 @@ outlines <- rasterToPolygons(mm, dissolve=TRUE)
 #   mutate(day_time = paste(month(timestamp), day(timestamp), sampling_period, sep = "_"))
 first_ls <- split(locs[which(locs$stage == "juvenile"),], locs$datestamp[which(locs$stage == "juvenile")])
 first_ls <- first_ls[lapply(first_ls, nrow) > 10]
+# test 
+late_ls <- late_ls[which(names(late_ls) %in% names(first_ls))]
 
 first_akdes <- lapply(first_ls, function(x){
   x$index <- 1:nrow(x)
@@ -178,8 +180,10 @@ late_ls <- split(late_locs, late_locs$datestamp)
 #   mutate(day_time = paste(month(timestamp), day(timestamp), sampling_period, sep = "_"))
 late_ls <- split(locs[which(locs$stage == "adult"),], locs$datestamp[which(locs$stage == "adult")])
 late_ls <- late_ls[lapply(late_ls, nrow) > 10]
+# test
+late_ls <- late_ls[which(names(late_ls) %in% names(first_ls))]
 
-late_akdes <- lapply(late_ls2, function(x){
+late_akdes <- lapply(late_ls, function(x){
   # create a telemetry object to use the ctmm functions
   ind <- x %>%
     # erase identities because ctmm automatically detects them
@@ -213,6 +217,33 @@ akdes <- lapply(1:length(names(late_akdes)), function(x){
   names(fl) <- names(first_akdes)[[id]]
   return(fl)
 })
+
+only_first <- which(!names(first_akdes) %in% names(late_akdes))
+only_late <- which(!names(late_akdes) %in% names(first_akdes))
+
+akdes_first <- lapply(1:length(first_akdes[only_first]), function(x){
+  # do the same transformations to the juvenile only akdes as done to the combination above
+  f <- raster::raster(first_akdes[only_first][[x]], DF = "PDF")
+  # using the terra package for reprojection
+  f <- terra::rast(f)
+  f <- terra::project(f, "EPSG:4326")
+  # adding the date as the name
+  names(f) <- names(first_akdes[only_first])[x]
+  return(f)
+})
+
+akdes_late <- lapply(1:length(late_akdes[only_late]), function(x){
+  # do the same transformations to the juvenile only akdes as done to the combination above
+  f <- raster::raster(late_akdes[only_late][[x]], DF = "PDF")
+  # using the terra package for reprojection
+  f <- terra::rast(f)
+  f <- terra::project(f, "EPSG:4326")
+  # adding the date as the name
+  names(f) <- names(late_akdes[only_late])[x]
+  return(f)
+})
+
+akdes <- c(akdes, akdes_first, akdes_late)
 
 library(terra)
 terra::plot(late_akdes[[1]])
