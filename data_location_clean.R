@@ -65,8 +65,8 @@ gps <- lapply(1:nrow(info), function(x){
 gps_data <- list.files("C:/Users/hbronnvik/Documents/storkSSFs/full_data/", full.names = T)
 
 start_time <- Sys.time()
-## each study
-clean_gps_data <- lapply(30, function(x){
+## each individual
+clean_gps_data <- lapply(70:length(gps_data), function(x){
     ind_locs <- readRDS(gps_data[x])
     # We have to clean the data before we can determine whether the bird was migrating.
     # If we classify migratory as based on movement parameters, an outlier could create a false positive.
@@ -227,27 +227,32 @@ clean_gps_data <- lapply(30, function(x){
               s_df <- data.frame(individual.id = unique(locs_df$individual.id), local.identifier = unique(locs_df$individual.local.identifier),
                                  start_time = c(s1, s2), end_time = c(e1, e2), season = c("pre-breeding", "post-breeding"))
               }else{# if the animal did not survive to summer:
-              # start of the pre-breeding
-              s1 <- loco %>% 
-                filter(category_embc == 3) %>% 
-                slice(1) %>% 
-                select(timestamp) %>% 
-                deframe()
-              e1 <- loco %>% 
-                filter(category_embc == 3) %>% 
-                slice(n()) %>% 
-                select(timestamp) %>% 
-                deframe()
-              s_df <- data.frame(individual.id = unique(locs_df$individual.id), local.identifier = unique(locs_df$individual.local.identifier),
-                                 start_time = s1, end_time = e1, season = "pre-breeding")
+              if(nrow(loco %>% filter(category_embc == 3)) > 0){
+                # start of the pre-breeding
+                s1 <- loco %>% 
+                  filter(category_embc == 3) %>% 
+                  slice(1) %>% 
+                  select(timestamp) %>% 
+                  deframe()
+                e1 <- loco %>% 
+                  filter(category_embc == 3) %>% 
+                  slice(n()) %>% 
+                  select(timestamp) %>% 
+                  deframe()
+                s_df <- data.frame(individual.id = unique(locs_df$individual.id), local.identifier = unique(locs_df$individual.local.identifier),
+                                   start_time = s1, end_time = e1, season = "pre-breeding")
+              }else{
+                s_df <- data.frame()
+              }
             }
-            }
-          # use these to classify migration
-          locs_df <- lapply(1:nrow(s_df), function(x){
-            s <- locs_df %>% 
-              filter(between(timestamp, s_df$start_time[x], s_df$end_time[x])) %>% 
-              mutate(track_id = paste(unique(individual.id), unique(year(s_df$start_time[x])), s_df$season[x], sep = "_"))
-          }) %>% reduce(rbind)
+          }
+          if(nrow(s_df) > 0){
+            # use these to classify migration
+            locs_df <- lapply(1:nrow(s_df), function(x){
+              s <- locs_df %>% 
+                filter(between(timestamp, s_df$start_time[x], s_df$end_time[x])) %>% 
+                mutate(track_id = paste(unique(individual.id), unique(year(s_df$start_time[x])), s_df$season[x], sep = "_"))
+            }) %>% reduce(rbind)
           
           ## Finally, sub-sample to 15 minute intervals to remove burst data and reduce memory
           locs_df <- locs_df %>% 
@@ -256,6 +261,18 @@ clean_gps_data <- lapply(30, function(x){
             group_by(seq15) %>% 
             slice(1) %>% 
             ungroup()
+          
+          print(paste0("Completed the classification of individual ", x, " in ", y, "."), quote = F)
+          return(locs_df) # finish the year
+          }else{
+            locs_df <- locs_df %>% 
+              arrange(timestamp) %>% 
+              mutate(seq15 = round_date(timestamp, "15 minutes")) %>% 
+              group_by(seq15) %>% 
+              slice(1) %>% 
+              ungroup()%>% 
+              mutate(track_id = paste(unique(individual.id), unique(year(locs_df$timestamp)), "no_migration", sep = "_"))
+          }
           
           print(paste0("Completed the classification of individual ", x, " in ", y, "."), quote = F)
           return(locs_df) # finish the year
