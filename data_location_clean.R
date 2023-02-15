@@ -11,6 +11,7 @@ d_thresh <- 40000 # meters
 w_thresh <- 6 # weeks
 s_thresh <- 40 # m/s
 l_thresh <- 3 # degrees latitude
+g_thresh <- 7
 
 # required information
 load("C:/Users/hbronnvik/Documents/loginStored.rdata")
@@ -139,36 +140,36 @@ clean_locations <- lapply(full_files, function(x){
   #   theme_classic()
   print(ind$individual.local.identifier[1])
   return(ind)
-}) # 13.08803 mins
+}) # 13.011 mins
+Sys.time() - start_time
 # DOP duplucates:
 # "Snöfrid + A6Y49 (eobs 7971)"
 # "Wiesenmann (A6R70, eobs 8027)"
 # "Maximilian (E0343, e-obs 8032)"
 
-# saveRDS(clean_locations, file = "C:/Users/hbronnvik/Documents/storkSSFs/clean_locations_2023-02-10.rds")
+# saveRDS(clean_locations, file = paste0("C:/Users/hbronnvik/Documents/storkSSFs/clean_locations_", Sys.Date(),".rds"))
 
 
-
-n <- lapply(clean_locations, function(x){
-  df <- data.frame(unique(x$individual.id))
-  return(df)
-}) %>% reduce(rbind)
-
-clean_locations <- readRDS("C:/Users/hbronnvik/Documents/storkSSFs/clean_locations_2023-02-10.rds")
+clean_locations <- readRDS("C:/Users/hbronnvik/Documents/storkSSFs/clean_locations_2023-02-15.rds")
 
 
 # take the clean locations, remove birds that did not migrate and add a track ID for the ones that did
 migration_locations <- lapply(clean_locations, function(x){
   df <- x %>% 
-    dplyr::select(individual.id, timestamp, location.lat, location.long, daily_dist, daily_direction)
+    dplyr::select(individual.id, timestamp, location.lat, location.long, daily_dist, daily_direction, ground_speed_15)
   
   df <- df %>% 
     mutate(season = ifelse(month(timestamp) %in% c(7:11), "post", "pre"),
            track_id = paste(season, ifelse(month(timestamp) == 12, year(timestamp + years(1)), year(timestamp)), individual.id, sep = "_"))
   
   migratory <- lapply(split(df, df$track_id), function(y){
+    # does the bird try to migrate?
     m <- max(y$daily_dist) > d_thresh
-    if(m == T){
+    # are the data too gappy for us to judge?
+    td <- y %>% 
+      mutate(timegap = as.numeric(difftime(timestamp, lag(timestamp), units = "days")))
+    td <- max(na.omit(td$timegap)) > g_thresh
+    if(m == T & td == F){
       return(y)
     }else{
       y <- y %>% 
@@ -378,7 +379,7 @@ start_end <- start_end %>%
 migration_locations <- migration_locations %>% 
   filter(track_id %in% start_end$track_id)
 
-ml <- lapply(split(migration_locations, migration_locations$track_id), function(x){
+migration_locations <- lapply(split(migration_locations, migration_locations$track_id), function(x){
   se <- start_end %>% 
     filter(track_id == unique(x$track_id))
   x <- x %>% 
@@ -483,7 +484,8 @@ migration_locations <- lapply(split(migration_locations, migration_locations$ind
   # add a column containing the outcome of the migratory track
   x <- x %>% 
     group_by(track_id) %>% 
-    mutate(track_status = ifelse(loss == T & track_id == unique(final_track$track_id) & full_dist  == T, "incomplete", "complete")) %>% 
+    mutate(track_status = ifelse(loss == T & track_id == unique(final_track$track_id), "incomplete", "complete"),
+           track_status = ifelse(full_dist == F, "incomplete", track_status)) %>% 
     ungroup()
   return(x)
 }) %>% reduce(rbind)
@@ -503,4 +505,29 @@ complete_ml <- migration_locations %>%
 #             inherit.aes = F, alpha = 0.5, color = "gray20", linewidth = 0) +
 #   theme_classic()
 
-saveRDS(migration_locations, file = paste0("C:/Users/hbronnvik/Documents/storkSSFs/migration_locations_40kmCompass_", Sys.Date(), ".rds"))
+# saveRDS(migration_locations, file = paste0("C:/Users/hbronnvik/Documents/storkSSFs/migration_locations_40kmCompass_", Sys.Date(), ".rds"))
+
+
+lapply(split(complete_ml, complete_ml$track_id), function(x){
+  pdf(paste0("C:/Users/hbronnvik/Documents/storkSSFs/m_locs_check/", unique(x$track_id), ".pdf"),
+      width = 8.5, height = 11)
+  print(ggplot(x, aes(location.long, location.lat, color = timestamp)) +
+          borders(xlim = c(-10,10), ylim = c(20, 50))  +
+          geom_point() +
+          theme_classic())
+  dev.off()
+})
+
+m <- readRDS("C:/Users/hbronnvik/Documents/storkSSFs/full_data/23463463_2023-01-28.rds")
+# are there gaps?
+m <- m %>% 
+  mutate(timegap = as.numeric(difftime(timestamp, lag(timestamp), units = "days")))
+summary(m$timegap)
+
+x <- readRDS("C:/Users/hbronnvik/Documents/storkSSFs/full_data/23460438_2023-01-28.rds")
+# are there gaps?
+x <- x %>% 
+  mutate(timegap = as.numeric(difftime(timestamp, lag(timestamp), units = "days")))
+summary(x$timegap)
+
+
