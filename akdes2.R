@@ -6,120 +6,41 @@
 library(move)
 library(ctmm)
 library(lubridate)
-library(raster)
+library(terra)
 library(tidyverse)
 
 ## Get the data
-# read in the saved data and combine into a single df
-clean_files <- list.files("C:/Users/hbronnvik/Documents/storkSSFs/clean_data/", 
-                          pattern = "migration40", full.names = T)
-load("C:/Users/hbronnvik/Documents/loginStored.rdata")
+# read in the saved data
+locs <- readRDS("C:/Users/hbronnvik/Documents/storkSSFs/migration_locations_40kmCompass_2023-02-15.rds")
 
-migration_locations <- lapply(clean_files, function(x){
-  load(x)
-  locs$acceleration.raw.x <- NULL
-  locs$acceleration.raw.y <- NULL
-  locs$acceleration.raw.z <- NULL
-  locs$barometric.height <- NULL
-  locs$battery.charge.percent <- NULL
-  locs$battery.charging.current <- NULL
-  locs$external.temperature <- NULL
-  locs$gps.hdop <- NULL
-  locs$gps.time.to.fix <- NULL
-  locs$height.above.msl <- NULL
-  locs$light.level <- NULL
-  locs$manually.marked.outlier <- NULL
-  locs$ornitela.transmission.protocol <- NULL
-  locs$tag.voltage <- NULL
-  locs$manually.marked.valid <- NULL
-  return(locs)
-}) %>% reduce(rbind)
-
-# remove the information from non-migration, this should remove all birds that did not migrate
-migration_locations <- migration_locations %>% 
-  filter(!str_detect(phase, "no_")) %>% 
-  # use only locations on transiting days (the data contain stopovers)
-  filter(daily_distance >= 40*100)
-
-# remove accidentally duplicated data
-sissi <- migration_locations %>% 
-  filter(individual.local.identifier == "Sissi / DER AZ999 (eobs 8010)") %>% 
-  slice(1:62151)
-migration_locations <- migration_locations %>% 
-  filter(individual.local.identifier != "Sissi / DER AZ999 (eobs 8010)") %>% 
-  rbind(sissi)
-
-# define birds that took eastern routes as ones that are ever east of 15 longitude (East Germany)
-eastern_birds <- unique(migration_locations$individual.id[migration_locations$location.long > 15])
-
-# remove the eastern birds and add a track ID
-locs <- migration_locations %>% 
-  filter(!individual.id %in% eastern_birds) %>% 
-  mutate(track_id = paste0(individual.id, "_", phase))
-
-studies <- c(24442409, 212096177, 76367850, 21231406, 1176017658, 173641633)
-
-## determine the identities of the nestling birds (remove any care center adults)
-nestlings <- lapply(studies, function(x){
-  
-  print(x)
-  
-  birds <- getMovebankReferenceTable(study = x, login = loginStored) %>% 
-    drop_na(animal_id) %>% 
-    filter(sensor_type_id == 653)
-  
-  if(length(unique(birds$animal_id[grep("juv|chick", birds$animal_comments, fixed = F)])) > 0){
-    nesties1 <- unique(birds$animal_id[grep("juv|chick", birds$animal_comments, fixed = F)])
-  } else {nesties1 <- NA}
-  
-  if("animal_life_stage" %in% colnames(birds) & length(unique(birds$animal_id[which(birds$animal_life_stage == "nestling")])) > 0){
-    nesties2 <- unique(birds$animal_id[which(birds$animal_life_stage == "nestling")])
-  } else {nesties2 <-  NA}
-  
-  nesties <- na.omit(unique(c(unique(nesties1), unique(nesties2))))
-  
-  return(nesties)
-  
-}) %>% unlist()
-
-# add life stage
-locs <- locs %>% 
-  group_by(individual.id) %>% 
-  mutate(year = year(timestamp),
-         stage = ifelse(year == min(year), "juvenile", "adult"),
-         stage = ifelse(!individual.id %in% nestlings, "adult", stage)) %>% 
+# get the track IDs from the migratory birds
+rs_ids <- locs %>% 
+  group_by(individual.id, track_id) %>% 
+  slice(1) %>% 
+  dplyr::select(individual.id, track_id) %>% 
   ungroup()
 
-# align the locations in time (setting year or second in lubridate introduces NA)
+# the total number of migrations attempted and completed by each animal in each season 
+meta <- locs %>%
+  group_by(individual.id, season) %>% 
+  count(track_id) %>% 
+  mutate(journey_number = row_number()) %>% 
+  ungroup() %>% 
+  group_by(individual.id) %>%
+  mutate(total_journeys = n()) %>% 
+  ungroup()
+
+# add the number of journeys
+locs <- locs %>% 
+  rowwise() %>% 
+  mutate(journey_number = meta$journey_number[which(meta$track_id == track_id)]) %>% 
+  ungroup()
+
+# align the locations in time
 locs$datestamp <- locs$timestamp
 year(locs$datestamp) <- 2024
 second(locs$datestamp) <- 00
 locs$datestamp <- round_date(locs$datestamp, "hour")
-# 
-# times <- data.frame(mo = month(locs$datestamp), 
-#                     dy = day(locs$datestamp),
-#                     hr = hour(locs$datestamp),
-#                     mn = minute(locs$datestamp))
-# times <- times %>% 
-#   mutate(mo = ifelse(nchar(mo) == 1, paste0(0, mo), mo),
-#          dy = ifelse(nchar(dy) == 1, paste0(0, dy), dy),
-#          hr = ifelse(nchar(hr) == 1, paste0(0, hr), hr),
-#          mn = ifelse(nchar(mn) == 1, paste0(0, mn), mn))
-# 
-# locs$datestamp <- paste0("2024-", times$mo, "-", times$dy, " ", times$hr, ":", times$mn, ":00")
-# locs$datestamp <- as.POSIXct(locs$datestamp, tz = "UTC")
-
-
-  
-# split the data according to stage
-# first_locs <- locs %>% 
-#   filter(stage == "juvenile") %>% 
-#   # align the locations in hour
-#   mutate(datestamp = round_date(datestamp, unit = "hour"),
-#          hour = hour(timestamp),
-#          sampling_period = ifelse(hour >= 0 & hour < 6, 1, 
-#                                   ifelse(hour >= 6 & hour < 12, 2, 
-#                                          ifelse(hour >= 12 & hour < 18, 3, 4))))
 
 # get the outlines of land to remove the possibility of information over water
 # tmax <- raster::getData('worldclim', var = "tmax", res = 10)
@@ -128,9 +49,83 @@ locs$datestamp <- round_date(locs$datestamp, "hour")
 # # the Straits of Gibraltar are at most 60km across
 # mm <- buffer(mask, 30000)
 # raster::plot(mm)
-#writeRaster(mm, "C:/Users/hbronnvik/Documents/storkSSFs/buffered_water_ras.grd")
+# writeRaster(mm, "C:/Users/hbronnvik/Documents/storkSSFs/buffered_water_ras.grd")
 mm <- raster::raster("C:/Users/hbronnvik/Documents/storkSSFs/buffered_water_ras.grd")
 outlines <- rasterToPolygons(mm, dissolve=TRUE)
+
+# make a list of the unique hours
+dates <- split(locs, locs$datestamp)
+# keep only list elements with at least 10 data points so that the model can fit
+dates <- dates[lapply(dates, nrow) > 10]
+
+# Error in if (ANY) { : missing value where TRUE/FALSE needed
+# Error in eigen(hess) : infinite or missing values in 'x'
+x <- locs[locs$datestamp == "2024-06-20 06:00:00",] 
+# Error in if (ANY) { : missing value where TRUE/FALSE needed
+# "2024-06-16 09:00:00 UTC"
+# build AKDEs
+start_time <- Sys.time()
+full_akdes <- lapply(dates, function(x){
+  tryCatch({
+    print(unique(x$datestamp))
+    # create a telemetry object to use the ctmm functions
+    ind <- x %>%
+      # erase identities because ctmm automatically detects them
+      mutate(individual.id == 1,
+             individual.local.identifier = 1) %>% 
+      # align the locations in space
+      as.telemetry(projection = "ESRI:54009")
+    # fit a model to the data
+    guess <- ctmm.guess(ind, interactive=FALSE)
+    fit <- ctmm.select(ind, guess)
+    # calculate the KDE using the land outlines and the model
+    UD <- akde(ind, fit, SP = outlines, grid = list(dr = 30000))
+    return(UD)
+    # gc()
+  }, error = function(e){print(geterrmessage())})
+})
+Sys.time() - start_time
+
+ind <- locs %>% 
+  arrange(timestamp) %>% 
+  mutate(individual.id = as.character(datestamp),
+         individual.local.identifier = as.character(datestamp)) %>% 
+  group_by(individual.id) %>% 
+  mutate(count = n()) %>% 
+  ungroup() %>% 
+  filter(count >= 10) %>% 
+  filter(individual.id %in% unique(individual.id)[1:10])
+
+ind_tele <- as.telemetry(ind, projection = "ESRI:54009")
+start_time <- Sys.time()
+it <- lapply(ind_tele, function(x){
+  tryCatch({
+    year(x$timestamp) <- 2024
+    guess <- ctmm.guess(x, interactive=FALSE)
+    # fit the models
+    fit <- ctmm.select(x, guess)
+    print(paste0("Fitted a model for ", x$timestamp[1], "."), quote = F)
+    pair <- list(x, fit)
+    saveRDS(pair, file = paste0("C:/Users/hbronnvik/Documents/storkSSFs/ctmm_fits/", gsub("-|:| ", "",x$timestamp[1]), ".rds"))
+    return(fit)
+  }, error = function(e){print(geterrmessage(), quote = F)})
+})
+Sys.time() - start_time
+# "2024-06-21 14:30:06."
+# Error in if (ANY) { : missing value where TRUE/FALSE needed
+# [1] "2024-06-22 06:40:07."
+# [1] "infinite or missing values in 'x'"
+# [1] "Fitted a model for 2024-06-16 07:40:06."
+# [1] "Fitted a model for 2024-07-05 10:30:07."
+# [1] "Fitted a model for 2024-07-06 08:30:06."
+
+fitz <- list.files("C:/Users/hbronnvik/Documents/storkSSFs/ctmm_fits/", full.names = T)
+kdes <- lapply(1:length(it), function(x){
+  fit <- readRDS(fitz[x])
+  UD <- akde(fit[[1]], fit[[2]], SP = outlines, grid = list(dr = 30000))
+})
+# plot(kdes[[1]])
+
 
 # create a list of hours so that an AKDE can be built for each hour
 # create a list of sampling periods so that an AKDE can be built for each one
@@ -138,20 +133,18 @@ outlines <- rasterToPolygons(mm, dissolve=TRUE)
 #   # temporarily reduce the data to test the function:
 #   slice(1:1000) %>% 
 #   mutate(day_time = paste(month(timestamp), day(timestamp), sampling_period, sep = "_"))
-first_ls <- split(locs[which(locs$stage == "juvenile"),], locs$datestamp[which(locs$stage == "juvenile")])
+first_ls <- split(locs[which(locs$journey_number == 1),], locs$datestamp[which(locs$journey_number == 1)])
 first_ls <- first_ls[lapply(first_ls, nrow) > 10]
 # test 
 late_ls <- late_ls[which(names(late_ls) %in% names(first_ls))]
 
 start_time <- Sys.time()
 first_akdes <- lapply(first_ls, function(x){
-  x$index <- 1:nrow(x)
   # create a telemetry object to use the ctmm functions
   ind <- x %>%
     # erase identities because ctmm automatically detects them
-    mutate(individual.id == stage,
-           individual.local.identifier = stage,
-           timestamp = timestamp + index) %>% 
+    mutate(individual.id == 1,
+           individual.local.identifier = 1) %>% 
     # align the locations in space
     as.telemetry(projection = "ESRI:54009")
   # fit a model to the data
@@ -179,7 +172,7 @@ late_ls <- split(late_locs, late_locs$datestamp)
 #   # temporarily reduce the data to test the function:
 #   slice(1:1000) %>% 
 #   mutate(day_time = paste(month(timestamp), day(timestamp), sampling_period, sep = "_"))
-late_ls <- split(locs[which(locs$stage == "adult"),], locs$datestamp[which(locs$stage == "adult")])
+late_ls <- split(locs[which(locs$journey_number != 1),], locs$datestamp[which(locs$journey_number != 1)])
 late_ls <- late_ls[lapply(late_ls, nrow) > 10]
 # test
 late_ls <- late_ls[which(names(late_ls) %in% names(first_ls))]
@@ -189,7 +182,7 @@ late_akdes <- lapply(late_ls, function(x){
   ind <- x %>%
     # erase identities because ctmm automatically detects them
     mutate(individual.id == 1,
-           individual.local.identifier = "A") %>% 
+           individual.local.identifier = 1) %>% 
     # align the locations in space
     as.telemetry(projection = "ESRI:54009")
   # fit a model to the data
@@ -199,6 +192,9 @@ late_akdes <- lapply(late_ls, function(x){
   return(UD)
 })
 Sys.time() - start_time
+
+first_akdes <- readRDS("C:/Users/hbronnvik/Documents/storkSSFs/first_akdes_02.02.rds")
+late_akdes <- readRDS("C:/Users/hbronnvik/Documents/storkSSFs/late_akdes_02.03.rds")
 
 # combine the adult and juvenile akdes in time
 akdes <- lapply(1:length(names(late_akdes)), function(x){
@@ -217,6 +213,7 @@ akdes <- lapply(1:length(names(late_akdes)), function(x){
     fl <- terra::merge(f, l)
     # adding the date as the name
     names(fl) <- names(first_akdes)[[id]]
+    print(paste0("Combined ", names(late_akdes)[x], "."), quotes = F)
     return(fl)}
 })
 # the hours that have information from both adults and juveniles:
@@ -237,7 +234,7 @@ akdes_first <- lapply(1:length(first_akdes[only_first]), function(x){
 })
 
 akdes_late <- lapply(1:length(late_akdes[only_late]), function(x){
-  # do the same transformations to the juvenile only akdes as done to the combination above
+  # do the same transformations to the adult only akdes as done to the combination above
   f <- raster::raster(late_akdes[only_late][[x]], DF = "PDF")
   # using the terra package for reprojection
   f <- terra::rast(f)
@@ -247,8 +244,8 @@ akdes_late <- lapply(1:length(late_akdes[only_late]), function(x){
   return(f)
 })
 
-akdes <- c(akdes, akdes_first, akdes_late)
-# saveRDS(akdes, file = "C:/Users/hbronnvik/Documents/storkSSFs/akdes_combined_2023-01-25.rds")
+akdes <- c(akdes, akdes_first)#, akdes_late)
+# saveRDS(akdes, file = "C:/Users/hbronnvik/Documents/storkSSFs/akdes_combined_2023-02-03.rds")
 
 # plot all of the akdes to see how they move through time  
 # p <- vect(outlines)
