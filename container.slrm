@@ -1,0 +1,32 @@
+#!/bin/bash
+#SBATCH -J r-ctmm
+#SBATCH -o ./job.out.%j
+#SBATCH -e ./job.err.%j
+#SBATCH -D ./
+#SBATCH --ntasks=1         # launch job on a single core
+#SBATCH --cpus-per-task=1  #   on a shared node
+#SBATCH --mem=2000MB       # memory limit for the job
+#SBATCH --time=0:05:00
+#SBATCH --mail-type=all
+#SBATCH --mail-user=hbronnvik@ab.mpg.de
+
+module purge
+module load apptainer r_ctmm/1.1.0
+
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+
+# create the  program
+cat <<EOF >ctmm_akde.R
+library('ctmm')
+outlines <- readRDS("outlines.rds")
+print("Hello World!")
+print(outlines)
+saveRDS(outlines, "test.rds")
+EOF
+
+# run hello world program via the containerized R, using the shell alias for R won't work
+srun apptainer run --bind /ptmp:/ptmp --bind /u:/u --bind /raven:/raven  --bind /u/hbron/slrm_jobs:/u/hbron/slrm_jobs\
+                   --mount type=bind,src=/u/hbron/slrm_jobs/outlines.rds,dst=/u/hbron/slrm_jobs/outlines.rds \
+    ${R_CONTAINER} \
+    /usr/bin/Rscript ctmm_akde.R 2>&1 errorlog
+
