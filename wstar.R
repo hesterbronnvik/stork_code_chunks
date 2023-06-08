@@ -22,19 +22,28 @@ CubeRoot<-function(x){
   sign(x)*abs(x)^(1/3)
 }
 # a function to calculate w*
-convective <- function(blh, T2m, Tblh, s_flux, m_flux, qblh, p0, p1) {
+convective <- function(data) {
   
-  p <- 0.2854 # Poisson constant.
-  g = 9.80665 # acceleration due to gravity.
-  z <- blh # boundary layer height.
-  T_k_2m <- T2m # surface temperature.
-  T_K_blh <- Tblh # temperature at the boundary layer height.
-  q <- qblh # humidity at the boundary layer height.
-  T_c_2m <- T_k_2m - 273.15 # surface temperature in degrees Celsius.
-  Theta_k_z <- T_K_blh*((p0/p1)^p)
+  df <- data # the data input
+  z <- df[, "blh"] # the boundary layer height
+  s_flux <- df[, "sflux"] # the surface sensible heat flux
+  m_flux <- df[, "mflux"] # the moisture flux
+  T_k_2m <- df[, "temp2m"] # the temperature at ground level
+  p0 <- df[, "p0"] # the pressure at ground level
+  q <- df[, "blh_humidity"] # the humidity at the boundary layer height
+  p1 <- df[, "blh_pressure"] # the pressure at the boundary layer height
+  T_K_blh <- df[, "blh_temperature"] # the temperature at the boundary layer height
+  
+  k <- 0.2854 # Poisson constant
+  g <- 9.80665 # acceleration due to gravity
+  T_c_2m <- T_k_2m - 273.15 # surface temperature in degrees Celsius
+  c_p <- 1012 # the isobaric mass heat capacity of air at common conditions
+  p <- 1.225 # the density of air at sea level and 273 K
+  
+  Theta_k_z <- T_K_blh*((p0/p1)^k)
   Thetav_k_z <- Theta_k_z*(1+(0.61*q))
-  wT <- (s_flux * -1)/1012/1.2 #reverse the sign. ECMWF upward fluxes are negative
-  wq <- (m_flux * -1)/1.2 #reverse the sign.
+  wT <- (s_flux * -1)/c_p/p # reverse the sign. ECMWF upward fluxes are negative
+  wq <- (m_flux * -1)/p # reverse the sign
   
   wthetav <- wT + 0.61 * T_c_2m * wq
   
@@ -143,8 +152,35 @@ annotated_data <- lapply(1:nrow(data), function(rown){
 }) %>% reduce(rbind)
 Sys.time() - start_time
 
-annotated_data$w_star <- convective(annotated_data$blh, annotated_data$temp2m, annotated_data$blh_temperature,
-                                    annotated_data$hflux, annotated_data$mflux, annotated_data$blh_humidity,
-                                    annotated_data$p0, annotated_data$blh_pressure)
+convective <- function(data) {
+  
+  df <- data # the data input
+  z <- df[, "blh"] # the boundary layer height
+  s_flux <- df[, "sflux"] # the surface sensible heat flux
+  m_flux <- df[, "mflux"] # the moisture flux
+  T_k_2m <- df[, "temp2m"] # the temperature at ground level
+  p0 <- df[, "p0"] # the pressure at ground level
+  q <- df[, "blh_humidity"] # the humidity at the boundary layer height
+  p1 <- df[, "blh_pressure"] # the pressure at the boundary layer height
+  T_K_blh <- df[, "blh_temperature"] # the temperature at the boundary layer height
+  
+  k <- 0.2854 # Poisson constant
+  g <- 9.80665 # acceleration due to gravity
+  T_c_2m <- T_k_2m - 273.15 # surface temperature in degrees Celsius
+  c_p <- 1012 # the isobaric mass heat capacity of air at common conditions
+  p <- 1.225 # the density of air at sea level and 273 K
+  
+  Theta_k_z <- T_K_blh*((p0/p1)^k)
+  Thetav_k_z <- Theta_k_z*(1+(0.61*q))
+  wT <- (s_flux * -1)/c_p/p # reverse the sign. ECMWF upward fluxes are negative
+  wq <- (m_flux * -1)/p # reverse the sign
+  
+  wthetav <- wT + 0.61 * T_c_2m * wq
+  
+  w_star <- CubeRoot(g*z*(wthetav/Thetav_k_z))
+  
+  return(w_star)
+  
+}
 
-
+annotated_data$w_star <- convective(data = annotated_data)
