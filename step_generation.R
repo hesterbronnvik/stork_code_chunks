@@ -12,16 +12,13 @@ library(tidyverse)
 
 hr <- 60 #minutes; determine the sub-sampling interval
 tolerance <- 15 #minutes; tolerance for sub-sampling
-n_alt <- 500 #number of alternative steps.
+n_alt <- 100 #number of alternative steps.
 meters_proj <- CRS("+proj=moll +ellps=WGS84")#Mollweide projection (in meters) for accurate calculation of length
 wgs <- CRS("+proj=longlat +datum=WGS84 +no_defs")
 
 # the location data during migration
-migration_locations <- readRDS("C:/Users/hbronnvik/Documents/storkSSFs/migration_locations_40km70km30daySpeed_2023-04-12.rds")
-ml_compass <- readRDS("C:/Users/hbronnvik/Documents/storkSSFs/migration_locations_40kmCompass_2023-02-15.rds")
-# only locations from complete routes
-full_ml <- migration_locations %>% 
-  filter(track_status == "complete")
+full_ml <- readRDS("C:/Users/hbronnvik/Documents/storkSSFs/juv_complete_migration_locations_40km70km30daySpeed_2023-06-12.rds")
+# ml_compass <- readRDS("C:/Users/hbronnvik/Documents/storkSSFs/migration_locations_40kmCompass_2023-02-15.rds")
 
 # only migratory flight locations
 # filter ground speeds and daily distances (speed is scalar and a few missing data can affect it dramatically)
@@ -41,50 +38,50 @@ ggplot(full_ml %>% filter(trackID == "173199625_fall_2016"), aes(location.long, 
   geom_point() +
   theme_classic()
 
-
-trk <- full_ml %>% 
-  make_track(location.long, location.lat, timestamp, id = individual.id) %>% 
-  nest(data = -"id") %>% 
-  mutate(steps = map(data, function(x) 
-    x %>% track_resample(rate = minutes(hr), tolerance = minutes(tolerance)) %>% steps_by_burst()))
-
-sl_plot <- trk %>% select(id, steps) %>% unnest(cols = steps) %>% 
-  ggplot(aes(sl_, fill = factor(id))) +
-  geom_density(alpha = 0.4) +
-  labs(x = "Step length (degrees)", y = "Density") +
-  theme_classic() +
-  scale_x_continuous(limits = c(0, 2), expand = c(0, 0)) +
-  scale_y_continuous(limits = c(0, 25), expand = c(0, 0)) +
-  theme(legend.position = "none")
-
-ta_plot <- trk %>% select(id, steps) %>% unnest(cols = steps) %>% 
-  ggplot(aes(ta_, fill = factor(id))) +
-  geom_density(alpha = 0.4) +
-  labs(x = "Turning angle (radians)", y = "Density") +
-  theme_classic() +
-  scale_y_continuous(limits = c(0, 15), expand = c(0, 0)) +
-  theme(legend.position = "none")
-
-ggarrange(sl_plot, ta_plot)
-
-tracks <- lapply(split(full_ml, full_ml$track_id), function(x){
-  trk <- x %>%
-    make_track(location.long, location.lat, timestamp, id = individual.id) %>%
-    track_resample(rate = minutes(hr), tolerance = minutes(tolerance)) %>% 
-    steps_by_burst() %>% 
-    random_steps(n_control = 500) %>% 
-    mutate(track_id = unique(x$track_id))
-})
-
-check <- lapply(split(full_ml, full_ml$track_id), function(x){
-  if(nrow(x) < 10){return(nrow(x))}
-}) %>% unlist()
-
-move_ls <- lapply(split(full_ml, full_ml$individual.id), function(x){
-  x <- x %>% 
-    arrange(timestamp)
-  mv <- move(x$location.long, x$location.lat, x$timestamp, x, proj = CRS("+proj=longlat +datum=WGS84 +no_defs"), animal = unique(x$individual.id))
-})
+# 
+# trk <- full_ml %>% 
+#   make_track(location.long, location.lat, timestamp, id = individual.id) %>% 
+#   nest(data = -"id") %>% 
+#   mutate(steps = map(data, function(x) 
+#     x %>% track_resample(rate = minutes(hr), tolerance = minutes(tolerance)) %>% steps_by_burst()))
+# 
+# sl_plot <- trk %>% select(id, steps) %>% unnest(cols = steps) %>% 
+#   ggplot(aes(sl_, fill = factor(id))) +
+#   geom_density(alpha = 0.4) +
+#   labs(x = "Step length (degrees)", y = "Density") +
+#   theme_classic() +
+#   scale_x_continuous(limits = c(0, 2), expand = c(0, 0)) +
+#   scale_y_continuous(limits = c(0, 25), expand = c(0, 0)) +
+#   theme(legend.position = "none")
+# 
+# ta_plot <- trk %>% select(id, steps) %>% unnest(cols = steps) %>% 
+#   ggplot(aes(ta_, fill = factor(id))) +
+#   geom_density(alpha = 0.4) +
+#   labs(x = "Turning angle (radians)", y = "Density") +
+#   theme_classic() +
+#   scale_y_continuous(limits = c(0, 15), expand = c(0, 0)) +
+#   theme(legend.position = "none")
+# 
+# ggarrange(sl_plot, ta_plot)
+# 
+# tracks <- lapply(split(full_ml, full_ml$track_id), function(x){
+#   trk <- x %>%
+#     make_track(location.long, location.lat, timestamp, id = individual.id) %>%
+#     track_resample(rate = minutes(hr), tolerance = minutes(tolerance)) %>% 
+#     steps_by_burst() %>% 
+#     random_steps(n_control = 500) %>% 
+#     mutate(track_id = unique(x$track_id))
+# })
+# 
+# check <- lapply(split(full_ml, full_ml$track_id), function(x){
+#   if(nrow(x) < 10){return(nrow(x))}
+# }) %>% unlist()
+# 
+# move_ls <- lapply(split(full_ml, full_ml$individual.id), function(x){
+#   x <- x %>% 
+#     arrange(timestamp)
+#   mv <- move(x$location.long, x$location.lat, x$timestamp, x, proj = CRS("+proj=longlat +datum=WGS84 +no_defs"), animal = unique(x$individual.id))
+# })
 
 full_ml <- full_ml %>% 
   arrange(individual.id, timestamp) %>% 
@@ -93,7 +90,7 @@ full_ml <- full_ml %>%
 mv <- move(x = full_ml$location.long, y = full_ml$location.lat, time = full_ml$timestamp, data =full_ml, 
            proj = CRS("+proj=longlat +datum=WGS84 +no_defs"), animal = full_ml$trackID)
 
-### Taken from E. Nourani 2021 https://github.com/mahle68/global_seascape_public/blob/main/step_generation.R
+### Adapted from E. Nourani 2021 https://github.com/mahle68/global_seascape_public/blob/main/step_generation.R
 #import required functions
 
 NCEP.loxodrome.na <- function (lat1, lat2, lon1, lon2) {
@@ -300,20 +297,21 @@ if(length(sp_obj_ls) > 0){
 }
   
 
-Sys.time() - b # Time difference of 47.94454 mins
+Sys.time() - b # Time difference of 1.044653 hours
 
 #create one dataframe with movebank specifications
 used_av_df <- used_av_track %>% 
   dplyr::select( c("timestamp", "location.lat", "location.long", "selected", "individual.id",  "burst_id", "step_length", "turning_angle", "track", "step_id", "used", "heading")) %>% 
-  mutate(timestamp = paste(as.character(timestamp),"000",sep = ".")) %>% 
+  # mutate(timestamp = paste(as.character(timestamp),"000",sep = ".")) %>% 
   mutate(stratum = paste(track, burst_id, step_id, sep = "_")) %>% #create unique stratum id
   as.data.frame()
 
+# ---------------------------------------------------------------------------------------------------------
 
 #rename lat and lon columns
 colnames(used_av_df)[c(2,3)] <- c("location-lat", "location-long")
 
-# saveRDS(used_av_df, file = "C:/Users/hbronnvik/Documents/storkSSFs/used_av_df_230216.rds")
+# saveRDS(used_av_df, file = "C:/Users/hbronnvik/Documents/storkSSFs/used_av_df_230612.rds")
 
 used_av_df <- used_av_df %>% 
   mutate(splitter = c(rep("A", times = 1000000), rep("B", times = 1000000), rep("C", times = 1000000), rep("D", times = 1000000), 
