@@ -23,7 +23,7 @@ split_gps_bursts_move <- function(data.ind, MaxTimeDiff, MinBurstLength){
   if(!require("data.table")){install.packages("data.table");library(data.table)}
   if(!require("tidyverse")){install.packages("tidyverse");library(tidyverse)}
   
-  source("nearest.R")
+  # source("nearest.R")
   
   #---------------------------------#
   #- Preparation of the data frame -#
