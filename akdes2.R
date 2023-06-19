@@ -9,6 +9,7 @@ library(lubridate)
 library(raster)
 library(terra)
 library(tidyverse)
+library(data.table)
 
 wind_support <- function(u,v,heading) {
   angle <- atan2(u,v) - heading/180*pi
@@ -218,9 +219,17 @@ year(a_data$alignment) <- 2024
 second(a_data$alignment) <- 00
 a_data$alignment <- round_date(a_data$alignment, "hour")
 
+# call in a buffered raster of land outlines + 30km
+mm <- raster::raster("C:/Users/hbronnvik/Documents/storkSSFs/buffered_water_ras.grd")
+outlines <- raster::rasterToPolygons(mm, dissolve=TRUE)
+
 # make the home ranges for all but a focal animal 
+start_time <- Sys.time()
 HR <- lapply(unique(a_data$individual.id), function(x){
-  ind <- locs %>% 
+  ind <- a_data %>% 
+    filter(individual.id == x)
+  soc <- locs %>% 
+    filter(individual.id != x) %>% 
     mutate(individual.id = as.character(datestamp),
            individual.local.identifier = as.character(datestamp)) %>% 
     group_by(individual.id) %>% 
@@ -228,52 +237,111 @@ HR <- lapply(unique(a_data$individual.id), function(x){
     ungroup() %>% 
     filter(count >= 5)%>% 
     filter(datestamp %in% unique(a_data$alignment))
-  year(ind$timestamp) <- 2024
+  year(soc$timestamp) <- 2024
   
   # take all of the migratory locations within the hours of migrations by birds that survived
-  ind <- ind %>% 
-    filter(datestamp %in% unique(a_data$alignment))
+  soc <- soc %>% 
+    filter(datestamp %in% unique(ind$alignment))
   # make a list of telemetry objects
-  ind_tele <- as.telemetry(ind, projection = "ESRI:54009")
-  # saveRDS(ind_tele, file = "C:/Users/hbronnvik/Documents/storkSSFs/ind_tele.rds")
+  soc_tele <- suppressWarnings(suppressMessages(as.telemetry(soc, projection = "ESRI:54009")))
   # make a list of model fits
-  start_time <- Sys.time()
-  it <- lapply(ind_tele, function(x){
+  fits <- lapply(soc_tele, function(x){
     tryCatch({
       guess <- ctmm.guess(x, interactive=FALSE)
       # fit the models
       fit <- ctmm.select(x, guess)
-      print(paste0("Fitted a model for ", x$timestamp[1], "."), quote = F)
-      pair <- list(x, fit)
-      # saveRDS(pair, file = paste0("C:/Users/hbronnvik/Documents/storkSSFs/ctmm_fits/", gsub("-|:| ", "",x$timestamp[1]), ".rds"))
-      return(pair)
+      return(fit)
     }, error = function(e){print(geterrmessage(), quote = F)})
-  })
-  Sys.time() - start_time #Time difference of 35.47424 mins
-  # split these apart for speed
-  fits <- lapply(it, function(fit){
-    f <- fit[[2]]
-  })
-  tels <- lapply(it, function(data){
-    d <- data[[1]]
-  })
-  # call in a buffered raster of land outlines + 30km
-  mm <- raster::raster("C:/Users/hbronnvik/Documents/storkSSFs/buffered_water_ras.grd")
-  outlines <- raster::rasterToPolygons(mm, dissolve=TRUE)
+  }) %>% suppressWarnings() # warning: Duplicate timestamps require an error model.
   # estimate utilization distributions of all the storks in each hour cropped to the buffered map
-  start_time <- Sys.time()
-  kdes <- akde(tels, fits, SP = outlines, grid = list(dr = 30000, extent = extent(-2468787, 3006683, 0, 6876759)))
-  Sys.time() - start_time
-})
-# saveRDS(kdes, file = "C:/Users/hbronnvik/Documents/storkSSFs/40x70x30day_kdes_ls_20230502.rds")
-kdes <- readRDS("C:/Users/hbronnvik/Documents/storkSSFs/40x70x30day_kdes_ls_20230502.rds")
+  kdes <- akde(soc_tele, fits, SP = outlines, grid = list(dr = 30000, extent = extent(-2468787, 3006683, 0, 6876759)))
+  # go through the KDEs to annotate the tracks
+  akde_data <- lapply(kdes, function(y){
+    # the hour covered by this KDE
+    kde_hour <- y@info$identity
+    # the locations in that hour
+    tracks <- ind %>% 
+      filter(alignment == kde_hour)
+    if(nrow(tracks) > 0){
+      # convert to a spatial object
+      coordinates(tracks) <- ~ location.long + location.lat
+      proj4string(tracks) <- CRS("EPSG:4326")
+      tracks <- spTransform(tracks, "ESRI:54009")
+      # the KDE as a raster ("PDF" gives the average probability density per cell)
+      ud <- raster(y, DF = "PDF")
+      # extract the UD value
+      vals <- raster::extract(ud, tracks)
+      # append
+      df <- ind %>% 
+        filter(alignment == kde_hour) %>% 
+        mutate(UD_PDF = vals)
+      return(df)
+    }
+  }) %>% 
+    discard(is.null)
+  akde_data <- rbindlist(akde_data)
+  print(paste0("Annotated data for individual ", which(unique(a_data$individual.id) == x), " of ", 
+        length(unique(a_data$individual.id)), "."))
+  return(akde_data)
+}) %>% rbindlist()
+Sys.time() - start_time # Time difference of 21.04753 hours
+a_data <- a_data %>% 
+  full_join(HR)
+
+# ind <- locs %>% 
+#   mutate(individual.id = as.character(datestamp),
+#          individual.local.identifier = as.character(datestamp)) %>% 
+#   group_by(individual.id) %>% 
+#   mutate(count = n()) %>% 
+#   ungroup() %>% 
+#   filter(count >= 5)%>% 
+#   filter(datestamp %in% unique(a_data$alignment))
+# year(ind$timestamp) <- 2024
+# 
+# # take all of the migratory locations within the hours of migrations by birds that survived
+# ind <- ind %>% 
+#   filter(datestamp %in% unique(a_data$alignment))
+# # make a list of telemetry objects
+# ind_tele <- as.telemetry(ind, projection = "ESRI:54009")
+# # saveRDS(ind_tele, file = "C:/Users/hbronnvik/Documents/storkSSFs/ind_tele.rds")
+# # make a list of model fits
+# start_time <- Sys.time()
+# it <- lapply(ind_tele, function(x){
+#   tryCatch({
+#     guess <- ctmm.guess(x, interactive=FALSE)
+#     # fit the models
+#     fit <- ctmm.select(x, guess)
+#     print(paste0("Fitted a model for ", x$timestamp[1], "."), quote = F)
+#     pair <- list(x, fit)
+#     # saveRDS(pair, file = paste0("C:/Users/hbronnvik/Documents/storkSSFs/ctmm_fits/", gsub("-|:| ", "",x$timestamp[1]), ".rds"))
+#     return(pair)
+#   }, error = function(e){print(geterrmessage(), quote = F)})
+# })
+# Sys.time() - start_time #Time difference of 35.47424 mins
+# # split these apart for speed
+# fits <- lapply(it, function(fit){
+#   f <- fit[[2]]
+# })
+# tels <- lapply(it, function(data){
+#   d <- data[[1]]
+# })
+# # call in a buffered raster of land outlines + 30km
+# mm <- raster::raster("C:/Users/hbronnvik/Documents/storkSSFs/buffered_water_ras.grd")
+# outlines <- raster::rasterToPolygons(mm, dissolve=TRUE)
+# # estimate utilization distributions of all the storks in each hour cropped to the buffered map
+# start_time <- Sys.time()
+# kdes <- akde(tels, fits, SP = outlines, grid = list(dr = 30000, extent = extent(-2468787, 3006683, 0, 6876759)))
+# Sys.time() - start_time
+# # saveRDS(kdes, file = "C:/Users/hbronnvik/Documents/storkSSFs/40x70x30day_kdes_ls_20230502.rds")
+# kdes <- readRDS("C:/Users/hbronnvik/Documents/storkSSFs/40x70x30day_kdes_ls_20230502.rds")
 ## Plot the AKDEs to see that they are as expected
 library(maptools)
 library(broom)
 library(magick)
+library(raster)
 data("wrld_simpl")
 ws <- crop(wrld_simpl, extent(-20,20,0,60))
-spdf_fortified <- tidy(ws, region = "ISO3")
+# spdf_fortified <- tidy(ws, region = "ISO3")
 
 # kdes_sub <- kdes[1:1000]
 lapply(kdes, function(x){
@@ -292,10 +360,9 @@ lapply(kdes, function(x){
   print(ggplot() +
           geom_raster(data = df, aes(x = x, y = y, fill = Probability)) +
           scale_fill_viridis(option = "B") +
-          geom_polygon(data = spdf_fortified, aes(x = long, y = lat, group = group), fill= NA, color="white")  +
+          geom_polygon(data = ws, aes(x = long, y = lat, group = group), fill= NA, color="white")  +
           coord_cartesian(xlim = c(-20, 20), ylim = c(0, 60)) +
           labs(title = sub("2024-", "     Time:  ", x@info$identity)) +
-          # geom_polygon(data = spdf_fortified, aes(x = long, y = lat, group = group), fill= NA, color="white")  +
           theme_void() +
           theme(panel.background = element_rect(fill = "black", colour = "black"),
                 plot.background = element_rect(fill = "black", colour = "black"),
@@ -573,7 +640,10 @@ saveRDS(subset, file = paste0("C:/Users/hbronnvik/Documents/storkSSFs/annotated_
 library(INLA)
 a_data <- readRDS("C:/Users/hbronnvik/Documents/storkSSFs/annotated_data_2023-05-03.rds")
 a_data <- a_data %>% 
-  mutate_at(c("step_length", "turning_angle", "s_wind", "blh", "UD_PDF"),
+  mutate(s_wind = wind_support(u_wind, v_wind, heading),
+         c_wind = cross_wind(u_wind, v_wind, heading))
+a_data <- a_data %>% 
+  mutate_at(c("step_length", "turning_angle", "s_wind", "c_wind", "blh", "UD_PDF"),
             list(z = ~(scale(.))))
 a_data1 <- a_data[which(a_data$season == "fall"),]
 a_data1 <- a_data1 %>% 
@@ -582,6 +652,10 @@ a_data1 <- a_data1 %>%
          id1 = factor(individual.id),
          id2 = factor(individual.id),
          id3 = factor(individual.id)) %>% 
+  ungroup() %>% 
+  filter(!is.na(blh)) %>% 
+  group_by(stratum) %>% 
+  slice(1:100) %>% 
   ungroup()
 
 formula_w <- used ~ -1 + s_wind_z + w_star_z + UD_PDF_z + migration_z +
@@ -593,7 +667,7 @@ formula_w <- used ~ -1 + s_wind_z + w_star_z + UD_PDF_z + migration_z +
     hyper=list(theta=list(initial=log(1),fixed=F,prior="pc.prec",param=c(3,0.05)))) + 
   f(id3, UD_PDF_z,  model = "iid",
     hyper=list(theta=list(initial=log(1),fixed=F,prior="pc.prec",param=c(3,0.05)))) + 
-  f(id4, UD_PDF_z,  model = "iid",
+  f(id4, migration_z,  model = "iid",
     hyper=list(theta=list(initial=log(1),fixed=F,prior="pc.prec",param=c(3,0.05))))
 
 
@@ -609,6 +683,16 @@ formula_w <- used ~ -1 + UD_PDF_z*blh_z +
   f(id2, blh_z,  model = "iid",
     hyper=list(theta=list(initial=log(1),fixed=F,prior="pc.prec",param=c(3,0.05))),
     group = migration, control.group = list(model = "ar1", cyclic = F, scale.model = TRUE))
+
+formula_w <- used ~ -1 + blh_z * migration_z * UD_PDF_z + 
+  f(stratum, model = "iid", 
+    hyper = list(theta = list(initial = log(1e-6),fixed = T))) +
+  f(id1, blh_z, model = "iid",
+    hyper=list(theta=list(initial=log(1),fixed=F,prior="pc.prec",param=c(3,0.05)))) + 
+  f(id2, migration_z,  model = "iid",
+    hyper=list(theta=list(initial=log(1),fixed=F,prior="pc.prec",param=c(3,0.05)))) + 
+  f(id3, UD_PDF_z,  model = "iid",
+    hyper=list(theta=list(initial=log(1),fixed=F,prior="pc.prec",param=c(3,0.05))))                                                                                                                                                                                           
 
 #model without missing values
 M_post <- inla(formula_w, family = "Poisson",
@@ -632,11 +716,40 @@ colnames(graph)[which(colnames(graph)%in%c("0.05quant","0.95quant"))]<-c("Lower"
 colnames(graph)[which(colnames(graph)%in%c("mean"))]<-c("Estimate")
 graph$Factor <- rownames(graph)
 
+# from inlaBuzz on the HPC:
+graph <- data.frame(Factor = c("Uplift", "Migration", "Storks", "UpliftxMigration", "UpliftxStorks", "StorksxMigration", "UpliftxStorksxMigration"),
+                    Estimate = c(1.278, -0.003, 0.711, 0.295, 0.060, -0.004, -0.224),
+                    sd = c(0.115, 0.267, 0.608, 0.046, 0.027, 0.056, 0.031), 
+                    Lower = c(1.053, -0.527, -0.482, 0.205, 0.007, -0.114, -0.284),
+                    Upper = c(1.503, 0.521, 1.903, 0.386, 0.114, 0.105, -0.164))
+
 ggplot(graph, aes(Estimate, Factor)) +
-  geom_pointrange(aes(xmin = Lower, xmax = Upper), color = "#6B0F68") +
-  geom_point(color = "#6B0F68") +
-  geom_vline(xintercept = 0, lty = 2) +
-  theme_classic()
+  geom_vline(xintercept = 0, lty = 2, linewidth = 2) +
+  geom_pointrange(aes(xmin = Lower, xmax = Upper), color = "#A63A50", size = 3, linewidth = 3) +
+  geom_point(color = "#A63A50") + #6B0F68
+  # scale_x_continuous(breaks = c(-0.1, 0, 0.1, 0.2, 0.3, 0.4)) +
+  labs(y = "Factor") +
+  theme_classic() +
+  theme(text = element_text(color = "black", size = 60),
+        axis.text = element_text(color = "black", size = 45),
+        axis.line = element_line(colour = 'black', linewidth = 3),
+        plot.margin = unit(c(2,2,2,2), "cm"))
+
+library(readr)
+graph2 <- read_csv("C:/Users/hbronnvik/Documents/storkSSFs/m_pre.csv", show_col_types = F) %>% 
+  mutate(Variable = c("Uplift", "Migration", "Storks", "UpliftxMigration", "UpliftxStorks", "StorksxMigration", "UpliftxStorksxMigration"))
+
+ggplot(graph2, aes(Estimate, Variable)) +
+  geom_vline(xintercept = 0, lty = 2, linewidth = 2) +
+  geom_pointrange(aes(xmin = Lower, xmax = Upper), color = "#f9a242ff", size = 3, linewidth = 3) +
+  geom_point(color = "#f9a242ff") + #6B0F68
+  # scale_x_continuous(breaks = c(-0.1, 0, 0.1, 0.2, 0.3, 0.4)) +
+  labs(y = "") +
+  theme_classic() +
+  theme(text = element_text(color = "black", size = 60),
+        axis.text = element_text(color = "black", size = 45),
+        axis.line = element_line(colour = 'black', linewidth = 3),
+        plot.margin = unit(c(2,2,2,2), "cm"))
 
 summ_rndm  <- M_post$summary.random
 tab <-  M_post$summary.random$id1
@@ -660,12 +773,47 @@ M_pre <- inla(formula_w, family = "Poisson",
               control.compute = list(openmp.strategy = "huge", config = TRUE, cpo = T))
 saveRDS(M_pre, file = "M_pre.rds")
 
+# interactions
+n <- 500
+new_data <- a_data1 %>%
+  group_by(stratum) %>% 
+  slice_sample(n = 1) %>% 
+  ungroup() %>% 
+  slice_sample(n = n, replace = F) %>% 
+  mutate(used = NA,
+         blh_z = sample(seq(min(a_data1$blh_z),max(a_data1$blh_z), length.out = 10), n, replace = T), #regular intervals for wind support and delta t, so we can make a raster later on
+         UD_PDF_z = sample(seq(min(a_data1$UD_PDF_z),max(a_data1$UD_PDF_z), length.out = 10), n, replace = T),
+         migration_z = sample(seq(min(a_data1$migration_z),max(a_data1$migration_z), length.out = 10), n, replace = T)) %>% 
+  full_join(a_data1)
+(b <- Sys.time())
+M_pred <- inla(formula_w, family = "Poisson", 
+               control.fixed = list(
+                 mean = mean.beta,
+                 prec = list(default = prec.beta)),
+               data = new_data, 
+               num.threads = 10,
+               control.predictor = list(compute = TRUE), #this means that NA values will be predicted.
+               control.compute = list(openmp.strategy = "huge", config = TRUE, cpo = T))
+Sys.time() - b 
+# ----------------------------------------------------------
+
+
 # Set up the model, but do not yet fit it
-TMBStruc <- glmmTMB(used ~ s_wind_z + w_star_z + UD_PDF_z + migration_z +
-                     (1|stratum) + (0 + s_wind_z | id1) + (0 + w_star_z | id1) + (0 + UD_PDF_z | id1) + (0 + migration_z | id1),
+library(glmmTMB)
+TMBStruc <- glmmTMB(used ~ s_wind_z + blh_z + UD_PDF_z +
+                     (1|stratum) + (0 + s_wind_z | journey_number) + (0 + blh_z | journey_number) + (0 + UD_PDF_z | journey_number),
                    family=poisson,
                    data=a_data1,
                    doFit=FALSE)
+a_data1$journey_number <- as.factor(a_data1$journey_number)
+sub <- a_data1 %>% 
+  filter(journey_number == 1)
+TMBStruc = glmmTMB(used~s_wind_z+blh_z+UD_PDF_z+step_length_z+turning_angle_z+(1|stratum)+(0+s_wind_z|journey_number)+
+                     (0+blh_z|journey_number)+(0+UD_PDF_z|journey_number)+(0+step_length_z|journey_number)+(0+turning_angle_z|journey_number),
+                   family=poisson,data=a_data1,doFit=FALSE)
+# used ~ s_wind_z + blh_z + UD_PDF_z + migration_z + (1 | stratum) + (0 + s_wind_z | id1) + 
+# (0 + blh_z | id1) + (0 + UD_PDF_z |      id1) + (0 + migration_z | id1)
+
 # TMBStruc <- glmmTMB(used ~ blh_z*UD_PDF_z*migration_z +
 #                       (1|stratum) + (0 + blh_z | id1) + (0 + UD_PDF_z | id1) + (0 + migration_z | id1),
 #                     family=poisson,
@@ -674,27 +822,54 @@ TMBStruc <- glmmTMB(used ~ s_wind_z + w_star_z + UD_PDF_z + migration_z +
 # # Fix the standard deviation of the first random term, which is the (1|stratum) component
 # in the above model equation
 TMBStruc$parameters$theta[1] <- log(1e3)
-TMBStruc$mapArg <- list(theta=factor(c(NA,1:4)))
+TMBStruc$mapArg <- list(theta=factor(c(NA,1:5)))
 # Fit the model
 m_post <- glmmTMB::fitTMB(TMBStruc)
 summary(m_post)
 
+f <- as.data.frame(summary(m_post)[[6]]$cond)
+f$variable <- rownames(f) 
+f <- f %>%
+  mutate(variable = ifelse(grepl("blh", variable), "Uplift",
+                           ifelse(grepl("PDF", variable), "Stork density", 
+                                  ifelse(variable == "s_wind_z", "Wind support", 
+                                         ifelse(variable == "step_length_z", "Step length", 
+                                                ifelse(variable == "turning_angle_z", "Turning angle", "Intercept")))))) %>% 
+  rename(se = "Std. Error",
+         beta = Estimate) %>% 
+  slice(2:4)
+ggplot(f, aes(beta, variable, color = variable)) +
+  geom_errorbar(aes(xmin = beta-se, xmax = beta+se), width = 0, linewidth = 5) +
+  geom_point(size = 15) +
+  scale_color_manual(values = c("#A63A50", "#f7cb44ff", "#f9a242ff", "#CF7789", "#DA7407", "#D7A409")) +
+  labs(x = "β", y = "", title = "GLMM", color = "Variable") +
+  geom_vline(xintercept = 0, lty = 2) +
+  theme_classic() +
+  theme(text = element_text(color = "black", size = 60),
+        axis.text = element_text(color = "black", size = 50),
+        axis.line = element_line(colour = 'black', linewidth = 3))
+
 library(TwoStepCLogit)
-log_post <- Ts.estim(used ~ blh_z*UD_PDF_z + strata(stratum) + cluster(as.factor(journey_number)),
-         random = ~ blh_z*UD_PDF_z,
-         data = subset,
+a_data1 <- a_data1 %>% 
+  filter(journey_number != 9)
+log_post <- Ts.estim(used ~ blh_z + UD_PDF_z + s_wind_z + strata(stratum) + cluster(as.factor(journey_number)),
+         random = ~ blh_z + UD_PDF_z + s_wind_z,
+         data = a_data1,
          D="UN(1)")
 f <- data.frame(beta = log_post$beta, se = log_post$se)
 f$variable <- rownames(f) 
-f <- f %>% 
-  mutate(variable = ifelse(grepl("\\:", variable), "Storks X Uplift",
-                           ifelse(grepl("blh", variable), "Uplift", "Stork density")))
+# f <- f %>% 
+#   mutate(variable = ifelse(grepl("\\:", variable), "Storks X Uplift",
+#                            ifelse(grepl("blh", variable), "Uplift", "Stork density")))
+f <- f %>%
+  mutate(variable = ifelse(grepl("blh", variable), "Uplift",
+                           ifelse(grepl("PDF", variable), "Stork density", "Wind support")))
 ggplot(f, aes(beta, variable, color = variable)) +
   geom_errorbar(aes(xmin = beta-se, xmax = beta+se), width = 0, lwd = 5) +
   geom_point(size = 15) +
   scale_color_manual(values = c("#A63A50", "#f7cb44ff", "#f9a242ff")) +
   labs(x = "β", y = "", title = "Two step conditional logistic regression", color = "Variable") +
-  scale_x_continuous(breaks = c(-1, 0, 1, 2, 3, 4)) +
+  # scale_x_continuous(breaks = c(-1, 0, 1, 2, 3, 4)) +
   geom_vline(xintercept = 0, lty = 2, lwd = 2) +
   theme_classic() +
   theme(text = element_text(color = "black", size = 60),
@@ -705,8 +880,9 @@ r <- as.data.frame(log_post$r.effect) %>%
   rownames_to_column(var = "migration") %>% 
   rename(Uplift = blh_z,
          "Stork density"  = UD_PDF_z,
-         "Storks X Uplift" = "blh_z:UD_PDF_z") %>% 
-  pivot_longer(cols = Uplift:"Storks X Uplift", names_to = "variable", values_to = "beta")
+         Uplift = blh_z,
+         "Wind support" = s_wind_z) %>% 
+  pivot_longer(cols = Uplift:"Wind support", names_to = "variable", values_to = "beta")
 ggplot(r, aes(migration, beta, color = variable, group = variable)) +
   # geom_pointrange(aes(xmin = beta-se, xmax = beta+se), color = "#A63A50") +
   geom_hline(yintercept = 0, lty = 2, lwd = 2) +
