@@ -424,6 +424,33 @@ a_data <- a_data %>%
 # a_data$w_star <- deardorff(a_data$blh, a_data$tempK, a_data$s_flux)
 a_data$w_star <- w_star(blh = a_data$blh, T2m = a_data$tempK, s_flux = a_data$s_flux, m_flux = a_data$m_flux)
 
+# add on the wind annotations from the Env-DATA service:
+full_data <- readRDS("C:/Users/hbronnvik/Documents/storkSSFs/ecmwf_data/annotated/full_annotated_230623.rds")
+
+require(readr)
+files <- list.files("C:/Users/hbronnvik/Documents/storkSSFs/ecmwf_data/annotated/", full.names = T, 
+                    pattern = "\\d.csv")
+
+wind_data <- lapply(files, function(f){
+  wind_data <- read.csv(f)
+}) %>% reduce(rbind) %>% 
+  rename(lat = location.lat,
+         long = location.long) %>% 
+  mutate(timestamp = as.POSIXct(sub(".000", "", timestamp), origin  = "1970-01-01", tz = "UTC")) %>% 
+  select(-X, -group) %>% 
+  mutate(vec = paste0(timestamp, long, lat),
+         lat = as.numeric(lat),
+         long = as.numeric(long))
+
+full_data <- full_data %>% 
+  mutate(vec = paste0(timestamp, long, lat))
+
+build <- left_join(full_data, wind_data, by = "vec")
+
+all.equal(build$long.x, build$long.y)
+
+all.equal(wind_data$long, wind_data$long)
+
 ggplot(a_data, aes(x = w_star, group = ind, fill = ind)) +
   geom_density(adjust = 1.5, alpha = 0.4) +
   scale_fill_manual(values = c("#7F9AE5", "#B8DE29FF")) +
