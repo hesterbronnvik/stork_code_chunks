@@ -263,4 +263,55 @@ wind_file <- a_data %>%
 wind_files <- list.files("/home/hbronnvik/Documents/storkSSFs/ecmwf", pattern = "wind_filled", full.names = T)
 
 
+# make the column names convenient
+winds <- lapply(wind_files, read.csv) %>% reduce(rbind)
+winds$X <- NULL
+colnames(winds)
+colnames(winds)[2:3] <- c("long", "lat")
+colnames(winds)[6:11] <- c("u_950", "v_950", "u_10m", "u_100m", "v_100m", "v_10m")
+# turn the stamp back to an R format
+winds <- winds %>% 
+  mutate(timestamp = as.POSIXct(timestamp, tz = "UTC"))
+
+# also make the long/lat format match the a_data so that the join will recognize them (this is why I don't work in .csv)
+a_data <- a_data %>% 
+  mutate(long = as.character(long),
+         lat = as.character(lat)) %>% 
+  mutate(long = as.numeric(long),
+         lat = as.numeric(lat))
+
+# add the wind data to the steps with their social density and w*
+a_data <- full_join(a_data, winds) %>% 
+  mutate(cross_wind = cross_wind(u_950, v_950, heading),
+         wind_support = wind_support(u_950, v_950, heading),
+         wind_speed = wind_speed(u_950, v_950),
+         wind_speed_100m = wind_speed(u_100m, v_100m),
+         wind_speed_ground = wind_speed(u_10m, v_10m))
+
+# png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/wind_correlations.png", res = 1000, 
+#     width = 11.69, height = 8.27, units = "in")
+# print(ggplot(a_data, aes(wind_speed_ground, wind_speed)) +
+#         geom_point(alpha = 0.1)+
+#         geom_point(data = a_data, aes(wind_speed_ground, wind_speed_100m), pch = 15, alpha = 0.1)+
+#         geom_smooth(method = "lm", color = "red") +
+#         geom_smooth(data = a_data, aes(wind_speed_ground, wind_speed_100m), method = "lm", color = "orange") +
+#         labs(x = "Wind speed at 10m above ground", y = "Wind speed at pressure") +
+#         theme_classic()
+# )
+# dev.off()
+
+# save out the data to push to the MPCDF Raven where we can run INLA
+saveRDS(a_data, file = paste0("/home/hbronnvik/Documents/storkSSFs/a_data_", Sys.Date(), ".rds"))
+
+
+
+
+
+
+
+
+
+
+
+
 
