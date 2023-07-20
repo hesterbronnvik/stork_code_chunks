@@ -198,7 +198,7 @@ a_data$phi <- lapply(1:nrow(a_data), function(x){
 # then, run the function (assuming all column names match)
 a_data$w_star <- convective(a_data)
 
-summary(a_data$w_star);hist(a_data$w_star, breaks = 100)
+summary(a_data$w_star);hist(a_data$w_star, breaks = 100, main = "", xlab = )
 
 # we still need one more variable -- wind
 # determine which level of wind to use by looking at the overall flight heights of white storks
@@ -354,7 +354,7 @@ a_data1 %>%
 # STEP 1: run the model ------------------------------------------------------------------ 
 #this is based on Muff et al:
 #https://conservancy.umn.edu/bitstream/handle/11299/204737/Otters_SSF.html?sequence=40&isAllowed=y#glmmtmb-1
-
+# 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
 TMB_struc <- glmmTMB(used ~ -1 + UD_PDF_z + w_star_z + wind_support_z + 
                        step_length_z + turning_angle_z + (1|stratum) + 
                        (0 + UD_PDF_z | individual.id) + 
