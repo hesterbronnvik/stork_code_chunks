@@ -8,8 +8,11 @@ library(ctmm)
 library(lubridate)
 library(raster)
 library(terra)
-library(tidyverse)
+library(corrr)
+library(performance)
+library(glmmTMB)
 library(data.table)
+library(tidyverse)
 
 # functions: 
 wind_support <- function(u,v,heading) {
@@ -58,7 +61,7 @@ convective <- function(data) {
   
   return(w_star)
   
-}
+}# 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
 
 ## 1) Get the data
 
@@ -198,7 +201,7 @@ a_data$phi <- lapply(1:nrow(a_data), function(x){
 # then, run the function (assuming all column names match)
 a_data$w_star <- convective(a_data)
 
-summary(a_data$w_star);hist(a_data$w_star, breaks = 100, main = "", xlab = )
+summary(a_data$w_star);hist(a_data$w_star, breaks = 100, main = "", xlab = "Convective velocity scale")
 
 # we still need one more variable -- wind
 # determine which level of wind to use by looking at the overall flight heights of white storks
@@ -337,38 +340,77 @@ a_data <- a_data %>%
 # save out the data to push to the MPCDF Raven where we can run INLA
 saveRDS(a_data, file = paste0("/home/hbronnvik/Documents/storkSSFs/a_data_", Sys.Date(), ".rds"))
 
-library(tidyverse)
-library(corrr)
 
 # the data
-a_data <- readRDS(paste0("/home/hbronnvik/Documents/storkSSFs/a_data_", Sys.Date(), ".rds"))
+a_data <- readRDS(paste0("/home/hbronnvik/Documents/storkSSFs/a_data_2023-07-17.rds")) %>% 
+  mutate(migrations_z = scale(journey_number)[,1])
 
 # just the fall
 a_data1 <- a_data[grep("fall", a_data$track),]
 
 #look at correlation
 a_data1 %>% 
-  dplyr::select(c(UD_PDF, w_star, wind_support, step_length, turning_angle)) %>% 
+  dplyr::select(c(UD_PDF, w_star, wind_support, step_length, turning_angle, journey_number)) %>% 
   correlate() # wind_support and PDF = 0.133
 
 # STEP 1: run the model ------------------------------------------------------------------ 
 #this is based on Muff et al:
 #https://conservancy.umn.edu/bitstream/handle/11299/204737/Otters_SSF.html?sequence=40&isAllowed=y#glmmtmb-1
-# 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
-TMB_struc <- glmmTMB(used ~ -1 + UD_PDF_z + w_star_z + wind_support_z + 
+
+TMB_struc <- glmmTMB(used ~ -1 + UD_PDF_z + w_star_z + wind_support_z + migrations_z +
                        step_length_z + turning_angle_z + (1|stratum) + 
                        (0 + UD_PDF_z | individual.id) + 
                        (0 + w_star_z | individual.id) + 
-                       (0 + wind_support_z | individual.id), 
+                       (0 + wind_support_z | individual.id) + 
+                       (0 + migrations_z | individual.id), 
                      family = poisson, data = a_data1, doFit = FALSE,
                      #Tell glmmTMB not to change the first standard deviation, all other values are freely estimated (and are different from each other)
-                     map = list(theta = factor(c(NA,1:2))), #2 is the n of random slopes
+                     map = list(theta = factor(c(NA,1:4))), #2 is the n of random slopes
                      #Set the value of the standard deviation of the first random effect (here (1|startum_ID)):
-                     start = list(theta = c(log(1e3),0,0))) #add a 0 for each random slope. in this case, 2
+                     start = list(theta = c(log(1e3),0,0,0,0))) #add a 0 for each random slope. in this case, 2
 
-
+start_time <- Sys.Date()
 TMB_M <- glmmTMB:::fitTMB(TMB_struc)
+Sys.Date() - start_time
 summary(TMB_M)
+
+#extract coefficient estimates and confidence intervals
+confint(TMB_M)
+
+#extract individual-specific random effects:
+ranef(TMB_M)[[1]]$individual.id
+
+# STEP 2: model validation ------------------------------------------------------------------ 
+
+#calculate the RMSE
+performance_rmse(TMB_M) # 0.07331889
+
+graph <- confint(TMB_M) %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "Factor") %>% 
+  filter(!grepl("id", Factor)) %>% 
+  mutate(Variable = ifelse(Factor == "wind_support_z", "Wind support", 
+                           ifelse(Factor == "w_star_z", "Convection", 
+                                  ifelse(Factor == "UD_PDF_z", "Conspecific density", 
+                                         ifelse(Factor == "turning_angle_z", "Turning angle",
+                                                "Step length")))))
+
+colnames(graph)[2:3] <- c("Lower", "Upper") 
+
+# labels <- rev(c("TRI", "Step length", "Distance to ridge", "TRI: Step length", "TRI: Week",
+#                 "Step length: Week", "Step length: Distance to ridge", "Distance to ridge: Week",
+#                 "TRI: Step length: Week", "Distance to ridge: Step length: Week"))
+# 
+# VarOrder <- rev(unique(graph$Factor))
+# graph$Factor <- factor(graph$Factor, levels = VarOrder)
+
+ggplot(graph, aes(Estimate, Variable)) +
+  geom_vline(xintercept = 0, lty = 2) +
+  geom_pointrange(aes(xmin = Lower, xmax = Upper)) +
+  labs(y = "") +
+  theme_classic() +
+  theme(axis.text = element_text(color = "black", size = 12),
+        text = element_text(size = 20))
 
 
 ## The code run by the MPCDF
