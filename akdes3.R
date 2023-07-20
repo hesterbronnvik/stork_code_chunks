@@ -329,7 +329,7 @@ meta <- a_data %>%
   dplyr::select(-n)
 
 # add the number of journeys
-a_data <- a_data %>% 
+build <- a_data %>% 
   full_join(meta) %>% 
   # scale the predictors
   mutate_at(c("wind_support", "cross_wind", "w_star", "wind_speed", "UD_PDF", "step_length", "turning_angle"),
@@ -338,12 +338,13 @@ a_data <- a_data %>%
   dplyr::select(-colnames(.)[15:28])
 
 # save out the data to push to the MPCDF Raven where we can run INLA
-saveRDS(a_data, file = paste0("/home/hbronnvik/Documents/storkSSFs/a_data_", Sys.Date(), ".rds"))
+# saveRDS(a_data, file = paste0("/home/hbronnvik/Documents/storkSSFs/a_data_", Sys.Date(), ".rds"))
 
 
 # the data
 a_data <- readRDS(paste0("/home/hbronnvik/Documents/storkSSFs/a_data_2023-07-17.rds")) %>% 
-  mutate(migrations_z = scale(journey_number)[,1])
+  mutate(migrations_z = scale(journey_number)[,1],
+         blh_z = scale(blh)[,1])
 
 # just the fall
 a_data1 <- a_data[grep("fall", a_data$track),]
@@ -357,21 +358,21 @@ a_data1 %>%
 #this is based on Muff et al:
 #https://conservancy.umn.edu/bitstream/handle/11299/204737/Otters_SSF.html?sequence=40&isAllowed=y#glmmtmb-1
 
-TMB_struc <- glmmTMB(used ~ -1 + UD_PDF_z + w_star_z + wind_support_z + migrations_z +
+TMB_struc <- glmmTMB(used ~ -1 + UD_PDF_z*w_star_z*migrations_z + #wind_support_z + 
                        step_length_z + turning_angle_z + (1|stratum) + 
                        (0 + UD_PDF_z | individual.id) + 
                        (0 + w_star_z | individual.id) + 
-                       (0 + wind_support_z | individual.id) + 
+                       # (0 + wind_support_z | individual.id) + 
                        (0 + migrations_z | individual.id), 
                      family = poisson, data = a_data1, doFit = FALSE,
                      #Tell glmmTMB not to change the first standard deviation, all other values are freely estimated (and are different from each other)
-                     map = list(theta = factor(c(NA,1:4))), #2 is the n of random slopes
+                     map = list(theta = factor(c(NA,1:3))), #2 is the n of random slopes
                      #Set the value of the standard deviation of the first random effect (here (1|startum_ID)):
-                     start = list(theta = c(log(1e3),0,0,0,0))) #add a 0 for each random slope. in this case, 2
+                     start = list(theta = c(log(1e3),0,0,0))) #add a 0 for each random slope. in this case, 2
 
-start_time <- Sys.Date()
+start_time <- Sys.time()
 TMB_M <- glmmTMB:::fitTMB(TMB_struc)
-Sys.Date() - start_time
+Sys.time() - start_time # 3.499091 mins without interactions, 7.363507 mins with
 summary(TMB_M)
 
 #extract coefficient estimates and confidence intervals
@@ -383,17 +384,33 @@ ranef(TMB_M)[[1]]$individual.id
 # STEP 2: model validation ------------------------------------------------------------------ 
 
 #calculate the RMSE
-performance_rmse(TMB_M) # 0.07331889
+performance_rmse(TMB_M) # 0.07321248
 
 graph <- confint(TMB_M) %>% 
   as.data.frame() %>% 
   rownames_to_column(var = "Factor") %>% 
   filter(!grepl("id", Factor)) %>% 
-  mutate(Variable = ifelse(Factor == "wind_support_z", "Wind support", 
-                           ifelse(Factor == "w_star_z", "Convection", 
-                                  ifelse(Factor == "UD_PDF_z", "Conspecific density", 
-                                         ifelse(Factor == "turning_angle_z", "Turning angle",
-                                                "Step length")))))
+  mutate(Variable = c("Conspecific density", "Uplift", "Fall migrations", "Step length", "Turning angle",
+                      "Conspecifics X Uplift", "Conspecifics X Migrations", "Uplift X Migrations", "Conspecifics X Uplift X Migrations"))
+  # mutate(Variable = ifelse(Factor == "wind_support_z", "Wind support", 
+  #                          ifelse(Factor == "w_star_z", "Convection", 
+  #                                 ifelse(Factor == "UD_PDF_z", "Conspecific density", 
+  #                                        ifelse(Factor == "turning_angle_z", "Turning angle",
+  #                                               ifelse(Factor == "migrations_z", "Fall migrations",
+  #                                                      ifelse(Factor == "step_length_z", "Step length",
+  #                                                             ifelse(Factor == "UD_PDF_z:w_star_z", "Conspecifics x Migrations",
+  #                                                                    "ifelse"))))))))
+
+# graph <- confint(TMB_M) %>% 
+#   as.data.frame() %>% 
+#   rownames_to_column(var = "Factor") %>% 
+#   filter(!grepl("id", Factor)) %>% 
+#   mutate(Variable = ifelse(Factor == "wind_support_z", "Wind support", 
+#                            ifelse(Factor == "w_star_z", "Convection", 
+#                                   ifelse(Factor == "UD_PDF_z", "Conspecific density", 
+#                                          ifelse(Factor == "turning_angle_z", "Turning angle",
+#                                                 ifelse(Factor == "migrations_z", "Fall migrations",
+#                                                        "Step length"))))))
 
 colnames(graph)[2:3] <- c("Lower", "Upper") 
 
@@ -406,12 +423,45 @@ colnames(graph)[2:3] <- c("Lower", "Upper")
 
 ggplot(graph, aes(Estimate, Variable)) +
   geom_vline(xintercept = 0, lty = 2) +
-  geom_pointrange(aes(xmin = Lower, xmax = Upper)) +
+  geom_pointrange(aes(xmin = Lower, xmax = Upper), color = "#1287BA") +
   labs(y = "") +
   theme_classic() +
   theme(axis.text = element_text(color = "black", size = 12),
         text = element_text(size = 20))
 
+## make a grid of the length of the data to fill in with predicted values (one for each predictor)
+#to make sure the predictions cover the parameter space, create a dataset with all possible combinations. one per interaction term. merge later on
+grd_up <- expand.grid(x = (1:9),
+                       y = seq(from = min(a_data1$w_star, na.rm = T), to = quantile(a_data1$w_star, .9, na.rm = T), length.out = 15)) %>% # n = 135
+  rename(migrations = x,
+         w_star = y) %>% 
+  mutate(ud_pdf = mean(a_data1$UD_PDF, na.rm = T), #set other variables to their mean
+         # migrations = mean(a_data1$journey_number),
+         step_length = mean(a_data1$step_length, na.rm = T),
+         turning_angle = mean(a_data1$turning_angle, na.rm = T),
+         interaction = "uplift_migration")
+
+grd_soc <- expand.grid(x = (1:9),
+                      y = seq(from = min(a_data1$UD_PDF, na.rm = T), to = quantile(a_data1$UD_PDF, .9, na.rm = T), length.out = 15)) %>% # n = 135
+  rename(migrations = x,
+         ud_pdf = y) %>% 
+  mutate(w_star = mean(a_data1$w_star), #set other variables to their mean
+         # migrations = mean(a_data1$journey_number),
+         step_length = mean(a_data1$step_length, na.rm = T),
+         turning_angle = mean(a_data1$turning_angle, na.rm = T),
+         interaction = "ud_migration")
+
+grd_soc_up <- expand.grid(x = (-2:4),
+                       y = seq(from = min(a_data1$UD_PDF, na.rm = T), to = quantile(a_data1$UD_PDF, .9, na.rm = T), length.out = 15)) %>% # n = 135
+  rename(w_star = x,
+         ud_pdf = y) %>% 
+  mutate(#set other variables to their mean
+         migrations = mean(a_data1$journey_number),
+         step_length = mean(a_data1$step_length, na.rm = T),
+         turning_angle = mean(a_data1$turning_angle, na.rm = T),
+         interaction = "ud_up")
+
+grd_all <- bind_rows(grd_up, grd_soc, grd_soc_up) 
 
 ## The code run by the MPCDF
 ## --------------------------
