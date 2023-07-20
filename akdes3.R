@@ -31,6 +31,7 @@ convective <- function(data) {
   
   df <- data # the data input
   z <- df$blh # the boundary layer height
+  phi <- df$phi # the geopotential at the layer below the boundary layer
   s_flux <- df$sflux # the surface sensible heat flux
   m_flux <- df$mflux # the moisture flux
   T_k_2m <- df$T2m # the temperature at ground level
@@ -53,7 +54,7 @@ convective <- function(data) {
   
   wthetav <- wT + 0.61 * T_c_2m * wq
   
-  w_star <- CubeRoot(g*z*(wthetav/Thetav_k_z))
+  w_star <- CubeRoot(phi*(wthetav/Thetav_k_z))
   
   return(w_star)
   
@@ -188,9 +189,16 @@ a_data <- readRDS("/home/hbronnvik/Documents/storkSSFs/annotations/HR_230713.rds
 summary(a_data$UD_PDF)
 
 # estimate w* for the full burst data
+# first, determine phi (geopotential below the top of the boundary layer)
+a_data$phi <- lapply(1:nrow(a_data), function(x){
+  l <- a_data$level[x]
+  geoH <- a_data[x, which(colnames(a_data) == l)]
+  phi <- geoH*9.80665
+}) %>% unlist()
+# then, run the function (assuming all column names match)
 a_data$w_star <- convective(a_data)
 
-summary(a_data$w_star)
+summary(a_data$w_star);hist(a_data$w_star, breaks = 100)
 
 # we still need one more variable -- wind
 # determine which level of wind to use by looking at the overall flight heights of white storks
@@ -239,10 +247,15 @@ heights <- heights %>%
 mean(heights$ha_msl)
 
 # compare this mean to the mean heights of each pressure level in the annotations
-colMeans(a_data[,c(15:28)])
-level <- colnames(a_data[,c(15:28)][which(abs(colMeans(a_data[,c(15:28)]) - mean(heights$ha_msl)) == min(abs(colMeans(a_data[,c(15:28)]) - mean(heights$ha_msl))))])
-# this is the level to use:
-level
+log_heights <- lapply(15:28, function(x){
+  level_h <- a_data[, x]
+  level <- colnames(a_data)[x]
+  info <- data.frame(level = level, mean = mean(na.omit(log(level_h))), sd = sd(na.omit(log(level_h))))
+}) %>% reduce(rbind) %>% arrange(as.numeric(level))
+
+log_heights
+mean(na.omit(log(heights$ha_msl)))
+
 # read out files to annotate with the wind data from Movebank Env-DATA service at the given level
 # https://www.movebank.org/cms/movebank-content/env-data
 wind_file <- a_data %>% 
@@ -260,7 +273,7 @@ wind_file <- a_data %>%
 # })
 
 # after annotation, read in the files from Movebank Env-DATA
-wind_files <- list.files("/home/hbronnvik/Documents/storkSSFs/ecmwf", pattern = "wind_filled", full.names = T)
+wind_files <- list.files("/home/hbronnvik/Documents/storkSSFs/ecmwf/winds", pattern = ".csv", full.names = T)
 
 
 # make the column names convenient
@@ -300,18 +313,108 @@ a_data <- full_join(a_data, winds) %>%
 # )
 # dev.off()
 
+# the total number of migrations attempted and completed by each animal in each season 
+meta <- a_data %>%
+  mutate(season = ifelse(grepl("fall", track), "post", "pre")) %>% 
+  group_by(individual.id, season) %>% 
+  count(track) %>% 
+  mutate(journey_number = row_number()) %>% 
+  ungroup() %>% 
+  group_by(individual.id) %>%
+  mutate(total_journeys = n()) %>% 
+  ungroup() %>% 
+  dplyr::select(-n)
+
+# add the number of journeys
+a_data <- a_data %>% 
+  full_join(meta) %>% 
+  # scale the predictors
+  mutate_at(c("wind_support", "cross_wind", "w_star", "wind_speed", "UD_PDF", "step_length", "turning_angle"),
+            list(z = ~(scale(.)))) %>% 
+  # remove the geopotential heights
+  dplyr::select(-colnames(.)[15:28])
+
 # save out the data to push to the MPCDF Raven where we can run INLA
 saveRDS(a_data, file = paste0("/home/hbronnvik/Documents/storkSSFs/a_data_", Sys.Date(), ".rds"))
 
+library(tidyverse)
+library(corrr)
+
+# the data
+a_data <- readRDS(paste0("/home/hbronnvik/Documents/storkSSFs/a_data_", Sys.Date(), ".rds"))
+
+# just the fall
+a_data1 <- a_data[grep("fall", a_data$track),]
+
+#look at correlation
+a_data1 %>% 
+  dplyr::select(c(UD_PDF, w_star, wind_support, step_length, turning_angle)) %>% 
+  correlate() # wind_support and PDF = 0.133
+
+# STEP 1: run the model ------------------------------------------------------------------ 
+#this is based on Muff et al:
+#https://conservancy.umn.edu/bitstream/handle/11299/204737/Otters_SSF.html?sequence=40&isAllowed=y#glmmtmb-1
+
+TMB_struc <- glmmTMB(used ~ -1 + UD_PDF_z + w_star_z + wind_support_z + 
+                       step_length_z + turning_angle_z + (1|stratum) + 
+                       (0 + UD_PDF_z | individual.id) + 
+                       (0 + w_star_z | individual.id) + 
+                       (0 + wind_support_z | individual.id), 
+                     family = poisson, data = a_data1, doFit = FALSE,
+                     #Tell glmmTMB not to change the first standard deviation, all other values are freely estimated (and are different from each other)
+                     map = list(theta = factor(c(NA,1:2))), #2 is the n of random slopes
+                     #Set the value of the standard deviation of the first random effect (here (1|startum_ID)):
+                     start = list(theta = c(log(1e3),0,0))) #add a 0 for each random slope. in this case, 2
 
 
+TMB_M <- glmmTMB:::fitTMB(TMB_struc)
+summary(TMB_M)
 
 
+## The code run by the MPCDF
+## --------------------------
+
+# just the fall
+a_data1 <- a_data[grep("fall", a_data$track),]
+# subset to check whether it works
+a_data1 <- a_data1[a_data1$individual.id %in% unique(a_data1$individual.id)[1:20],]
+
+# fix the columns
+a_data1$migration <- as.numeric(a_data1$journey_number)
+a_data1$id1 <- as.factor(a_data1$individual.id)
+a_data1$id2 <- a_data1$id1
+a_data1$id3 <- a_data1$id1
+a_data1$id4 <- a_data1$id1
+a_data1$migration_z <- scale(a_data1$migration)[,1]
+
+# define the model formula
+# simple additive model with four predictors
+formula_w <- used ~ -1 + wind_support_z + w_star_z + UD_PDF_z + migration_z +
+  # independent and identically distributed
+  f(stratum, model = "iid", 
+    hyper = list(theta = list(initial = log(1e-6),fixed = T))) +
+  # we need a separate fixed effect for each slope
+  f(id1, wind_support_z, model = "iid",
+    hyper=list(theta=list(initial=log(1),fixed=F,prior="pc.prec",param=c(3,0.05)))) + 
+  f(id2, w_star_z,  model = "iid",
+    hyper=list(theta=list(initial=log(1),fixed=F,prior="pc.prec",param=c(3,0.05)))) + 
+  f(id3, UD_PDF_z,  model = "iid",
+    hyper=list(theta=list(initial=log(1),fixed=F,prior="pc.prec",param=c(3,0.05)))) + 
+  f(id4, migration_z,  model = "iid",
+    hyper=list(theta=list(initial=log(1),fixed=F,prior="pc.prec",param=c(3,0.05))))
+
+mean.beta <- 0
+prec.beta <- 1e-4
+
+M_post <- inla(formula_w, family = "Poisson",
+               control.fixed = list(
+                 mean = mean.beta,
+                 prec = list(default = prec.beta)),
+               data = a_data1,
+               control.compute = list(openmp.strategy = "huge", config = TRUE, cpo = T))
 
 
+as.data.frame(summary(M_post)$fixed)
 
 
-
-
-
-
+saveRDS(M_post, file = "M_post_07.rds")
