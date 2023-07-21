@@ -344,35 +344,38 @@ build <- a_data %>%
 # the data
 a_data <- readRDS(paste0("/home/hbronnvik/Documents/storkSSFs/a_data_2023-07-17.rds")) %>% 
   mutate(migrations_z = scale(journey_number)[,1],
-         blh_z = scale(blh)[,1])
+         blh_z = scale(blh)[,1]) %>% 
+  rename(ud_pdf = UD_PDF,
+         ud_pdf_z = UD_PDF_z,
+         migrations = journey_number)
 
 # just the fall
 a_data1 <- a_data[grep("fall", a_data$track),]
 
 #look at correlation
 a_data1 %>% 
-  dplyr::select(c(UD_PDF, w_star, wind_support, step_length, turning_angle, journey_number)) %>% 
+  dplyr::select(c(ud_pdf, w_star, wind_support, step_length, turning_angle, migrations)) %>% 
   correlate() # wind_support and PDF = 0.133
 
 # STEP 1: run the model ------------------------------------------------------------------ 
 #this is based on Muff et al:
 #https://conservancy.umn.edu/bitstream/handle/11299/204737/Otters_SSF.html?sequence=40&isAllowed=y#glmmtmb-1
 
-TMB_struc <- glmmTMB(used ~ -1 + UD_PDF_z*w_star_z*migrations_z + #wind_support_z + 
-                       step_length_z + turning_angle_z + (1|stratum) + 
-                       (0 + UD_PDF_z | individual.id) + 
+TMB_struc <- glmmTMB(used ~ -1 + ud_pdf_z*w_star_z*migrations_z + #wind_support_z +  step_length_z + turning_angle_z + 
+                       (1|stratum) + 
+                       (0 + ud_pdf_z | individual.id) + 
                        (0 + w_star_z | individual.id) + 
                        # (0 + wind_support_z | individual.id) + 
                        (0 + migrations_z | individual.id), 
                      family = poisson, data = a_data1, doFit = FALSE,
                      #Tell glmmTMB not to change the first standard deviation, all other values are freely estimated (and are different from each other)
-                     map = list(theta = factor(c(NA,1:3))), #2 is the n of random slopes
+                     map = list(theta = factor(c(NA,1:3))), # 3 is the n of random slopes
                      #Set the value of the standard deviation of the first random effect (here (1|startum_ID)):
                      start = list(theta = c(log(1e3),0,0,0))) #add a 0 for each random slope. in this case, 2
 
 start_time <- Sys.time()
 TMB_M <- glmmTMB:::fitTMB(TMB_struc)
-Sys.time() - start_time # 3.499091 mins without interactions, 7.363507 mins with
+Sys.time() - start_time # 3.499091 mins without interactions, 7.209997 mins with
 summary(TMB_M)
 
 #extract coefficient estimates and confidence intervals
@@ -384,12 +387,13 @@ ranef(TMB_M)[[1]]$individual.id
 # STEP 2: model validation ------------------------------------------------------------------ 
 
 #calculate the RMSE
-performance_rmse(TMB_M) # 0.07321248
+performance_rmse(TMB_M) # 0.07639366
 
 graph <- confint(TMB_M) %>% 
   as.data.frame() %>% 
   rownames_to_column(var = "Factor") %>% 
-  filter(!grepl("id", Factor)) %>% 
+  filter(!grepl("id", Factor)) %>% mutate(Variable = c("Conspecific density", "Uplift", "Fall migrations",
+                                                       "Conspecifics X Uplift", "Conspecifics X Migrations", "Uplift X Migrations", "Conspecifics X Uplift X Migrations"))
   mutate(Variable = c("Conspecific density", "Uplift", "Fall migrations", "Step length", "Turning angle",
                       "Conspecifics X Uplift", "Conspecifics X Migrations", "Uplift X Migrations", "Conspecifics X Uplift X Migrations"))
   # mutate(Variable = ifelse(Factor == "wind_support_z", "Wind support", 
@@ -435,14 +439,14 @@ grd_up <- expand.grid(x = (1:9),
                        y = seq(from = min(a_data1$w_star, na.rm = T), to = quantile(a_data1$w_star, .9, na.rm = T), length.out = 15)) %>% # n = 135
   rename(migrations = x,
          w_star = y) %>% 
-  mutate(ud_pdf = mean(a_data1$UD_PDF, na.rm = T), #set other variables to their mean
+  mutate(ud_pdf = mean(a_data1$ud_pdf, na.rm = T), #set other variables to their mean
          # migrations = mean(a_data1$journey_number),
          step_length = mean(a_data1$step_length, na.rm = T),
          turning_angle = mean(a_data1$turning_angle, na.rm = T),
          interaction = "uplift_migration")
 
 grd_soc <- expand.grid(x = (1:9),
-                      y = seq(from = min(a_data1$UD_PDF, na.rm = T), to = quantile(a_data1$UD_PDF, .9, na.rm = T), length.out = 15)) %>% # n = 135
+                      y = seq(from = min(a_data1$ud_pdf, na.rm = T), to = quantile(a_data1$ud_pdf, .9, na.rm = T), length.out = 15)) %>% # n = 135
   rename(migrations = x,
          ud_pdf = y) %>% 
   mutate(w_star = mean(a_data1$w_star), #set other variables to their mean
@@ -452,61 +456,86 @@ grd_soc <- expand.grid(x = (1:9),
          interaction = "ud_migration")
 
 grd_soc_up <- expand.grid(x = (-2:4),
-                       y = seq(from = min(a_data1$UD_PDF, na.rm = T), to = quantile(a_data1$UD_PDF, .9, na.rm = T), length.out = 15)) %>% # n = 135
+                       y = seq(from = min(a_data1$ud_pdf, na.rm = T), to = quantile(a_data1$ud_pdf, .9, na.rm = T), length.out = 15)) %>% # n = 135
   rename(w_star = x,
          ud_pdf = y) %>% 
   mutate(#set other variables to their mean
-         migrations = mean(a_data1$journey_number),
+         migrations = mean(a_data1$migrations),
          step_length = mean(a_data1$step_length, na.rm = T),
          turning_angle = mean(a_data1$turning_angle, na.rm = T),
          interaction = "ud_up")
 
 grd_all <- bind_rows(grd_up, grd_soc, grd_soc_up) 
 
-## The code run by the MPCDF
-## --------------------------
+set.seed(770)
+n <- nrow(grd_all)
 
-# just the fall
-a_data1 <- a_data[grep("fall", a_data$track),]
-# subset to check whether it works
-a_data1 <- a_data1[a_data1$individual.id %in% unique(a_data1$individual.id)[1:20],]
+new_data_only <- a_data1 %>%
+  group_by(stratum) %>% 
+  slice_sample(n = 1) %>% #randomly selects one row (from each stratum)
+  ungroup() %>% 
+  slice_sample(n = n, replace = F) %>% #randomly select n of these strata. Make sure n is less than n_distinct(data$stratum)
+  #only keep the columns that I need
+  dplyr::select(c("stratum", "individual.id")) %>% 
+  bind_cols(grd_all) %>% 
+  #calculate z-scores. get the mean(center) and sd(scale) from the previous z transformation. for consistency
+  mutate( w_star_z = (w_star - mean(a_data$w_star))/(sd(a_data$w_star)),
+          ud_pdf_z = (ud_pdf - mean(a_data$ud_pdf))/(sd(a_data$ud_pdf)),
+          migrations_z = (migrations - mean(a_data$migrations))/(sd(a_data$migrations)),
+          step_length_z = (step_length - mean(a_data$step_length, na.rm = T))/(sd(a_data$step_length, na.rm = T)), 
+          turning_angle_z = (step_length - mean(a_data$turning_angle, na.rm = T))/(sd(a_data$turning_angle, na.rm = T)))
 
-# fix the columns
-a_data1$migration <- as.numeric(a_data1$journey_number)
-a_data1$id1 <- as.factor(a_data1$individual.id)
-a_data1$id2 <- a_data1$id1
-a_data1$id3 <- a_data1$id1
-a_data1$id4 <- a_data1$id1
-a_data1$migration_z <- scale(a_data1$migration)[,1]
+new_data <- a_data1 %>% 
+  mutate(interaction = "OG_data") %>% 
+  dplyr::select(names(new_data_only)) %>%  #only keep the columns that are necessary for the model
+  bind_rows(new_data_only) %>% 
+  #accoring to the predict.glmmTMB help file: "To compute population-level predictions for a given grouping variable 
+  #(i.e., setting all random effects for that grouping variable to zero), set the grouping variable values to NA."
+  mutate(stratum = NA,
+         individual.id = NA)
 
-# define the model formula
-# simple additive model with four predictors
-formula_w <- used ~ -1 + wind_support_z + w_star_z + UD_PDF_z + migration_z +
-  # independent and identically distributed
-  f(stratum, model = "iid", 
-    hyper = list(theta = list(initial = log(1e-6),fixed = T))) +
-  # we need a separate fixed effect for each slope
-  f(id1, wind_support_z, model = "iid",
-    hyper=list(theta=list(initial=log(1),fixed=F,prior="pc.prec",param=c(3,0.05)))) + 
-  f(id2, w_star_z,  model = "iid",
-    hyper=list(theta=list(initial=log(1),fixed=F,prior="pc.prec",param=c(3,0.05)))) + 
-  f(id3, UD_PDF_z,  model = "iid",
-    hyper=list(theta=list(initial=log(1),fixed=F,prior="pc.prec",param=c(3,0.05)))) + 
-  f(id4, migration_z,  model = "iid",
-    hyper=list(theta=list(initial=log(1),fixed=F,prior="pc.prec",param=c(3,0.05))))
+# now that we have the values to predict, run the model on them
+preds <- predict(TMB_M, newdata = new_data, type = "link")
 
-mean.beta <- 0
-prec.beta <- 1e-4
+preds_pr <- new_data %>% 
+  mutate(preds = preds) %>% 
+  rowwise() %>% 
+  mutate(probs = gtools::inv.logit(preds)) #https://rpubs.com/crossxwill/logistic-poisson-prob
 
-M_post <- inla(formula_w, family = "Poisson",
-               control.fixed = list(
-                 mean = mean.beta,
-                 prec = list(default = prec.beta)),
-               data = a_data1,
-               control.compute = list(openmp.strategy = "huge", config = TRUE, cpo = T))
+inter_preds <- preds_pr %>% 
+  filter(interaction != "OG_data") %>% 
+  mutate(migrations = as.factor(migrations),
+         w_star = as.factor(round(w_star, digits = 2)),
+         ud_pdf = as.factor(round(ud_pdf, digits = 2)))
 
+ggplot(inter_preds %>% filter(interaction == "uplift_migration"), aes(migrations, w_star, fill = probs)) +
+  geom_tile(color = "white",
+            lwd = 1.5,
+            linetype = 1) +
+  scale_fill_gradient(low = "cornflowerblue",
+                      # mid = "white",
+                      high = "firebrick") +
+  labs(x = "Number of fall migrations completed", y = "Uplift (m/s)", fill = "Selection probability") +
+  theme_classic()
 
-as.data.frame(summary(M_post)$fixed)
+ggplot(inter_preds %>% filter(interaction == "ud_migration"), aes(migrations, ud_pdf, fill = probs)) +
+  geom_tile(color = "white",
+            lwd = 1.5,
+            linetype = 1) +
+  scale_fill_gradient(low = "cornflowerblue",
+                      # mid = "white",
+                      high = "firebrick") +
+  labs(x = "Number of fall migrations completed", y = "Social density", fill = "Selection probability") +
+  theme_classic()
 
+ggplot(inter_preds %>% filter(interaction == "ud_up"), aes(w_star, ud_pdf, fill = probs)) +
+  geom_tile(color = "white",
+            lwd = 1.5,
+            linetype = 1) +
+  scale_fill_gradient(low = "cornflowerblue",
+                      # mid = "white",
+                      high = "firebrick") +
+  labs(x = "Uplift (m/s)", y = "Social density", fill = "Selection probability") +
+  theme_classic()
 
-saveRDS(M_post, file = "M_post_07.rds")
+## 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
