@@ -25,10 +25,13 @@ colfunc <- colorRampPalette(c("#6A8532", "#87A330", "#A1C349", "#F3C053", "#F9A0
 # a universal palette (cool to warm)
 # cerulean, Munsell, verdigris, Tiffany, light orange, melon, salmon, bittersweet
 colfunc <- colorRampPalette(c("#0081A7", "#0098b0", "#00AFB9", "#7fc4b8", "#FED9B7", "#f7a58f", "#f27e71", "#F07167", "#ee5e53"))
-
-
+# universal facet labels
 fac_labs <- c("Fall", "Spring")
 names(fac_labs) <- c("post", "pre")
+
+### plots for data exploration
+
+# look at wind support distributions
 support <- ggplot(a_data, aes(as.factor(migrations), wind_support, fill = as.logical(used))) + 
   geom_hline(yintercept = 0, lty = 2) +
   geom_boxplot(linewidth = 1.5) +
@@ -41,6 +44,7 @@ support <- ggplot(a_data, aes(as.factor(migrations), wind_support, fill = as.log
         axis.text = element_text(color = "black"),
         legend.key.size = unit(2, 'cm')) +
   facet_wrap(~season, labeller = labeller(season = fac_labs))
+# look at wind speed distributions
 speeds <- ggplot(a_data, aes(as.factor(migrations), wind_speed, fill = as.logical(used))) + 
   geom_boxplot(linewidth = 1.5) +
   theme_classic() +
@@ -62,6 +66,7 @@ dev.off()
 a_data$datestamp <- a_data$timestamp
 year(a_data$datestamp) <- 2024
 
+# look at the number of recordings of migration on each day for each age group
 png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/migration_timing.png",
     height = 18, width = 20, units = "in", res = 300)
 a_data %>% 
@@ -85,6 +90,7 @@ a_data %>%
         legend.key.size = unit(2, 'cm'))
 dev.off()
 
+# look at uplift distributions per age group
 png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/seasonal_uplifts.png",
     height = 18, width = 20, units = "in", res = 300)
 ggplot(a_data %>% mutate(season = ifelse(season == "pre", "Spring", "Fall")), aes(as.factor(migrations), w_star, fill = season)) +
@@ -98,6 +104,7 @@ ggplot(a_data %>% mutate(season = ifelse(season == "pre", "Spring", "Fall")), ae
         axis.text = element_text(color = "black"))
 dev.off()
 
+# look at conspecific density distributions per age group
 ggplot(a_data, aes(x = as.factor(migrations), y = ud_pdf, fill = as.factor(used))) +
   geom_boxplot(lwd = 1.5, aes(alpha = forcats::fct_rev(as.factor(migrations)))) +
   scale_fill_manual(values = c("#0096CC", "#FE6D5D")) + 
@@ -109,9 +116,65 @@ ggplot(a_data, aes(x = as.factor(migrations), y = ud_pdf, fill = as.factor(used)
         axis.text = element_text(color = "black")) +
   facet_wrap(~season, labeller = labeller(season = fac_labs))
 
+# look at uplift distributions per season
+res_aov <- aov(w_star ~ factor(season), data = a_data)
+hist(res_aov$residuals)
+# not at all normal
+car::qqPlot(res_aov$residuals)
+wilcox.test(w_star ~ factor(season), data = a_data)
+png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/seasons_uplift.png",
+    height = 18, width = 20, units = "in", res = 300)
+print(ggplot(a_data %>% mutate(season = ifelse(season == "post", "Fall", "Spring")), aes(season, w_star, fill = season)) +
+        geom_boxplot(linewidth = 2) +
+        scale_color_manual(values = c("#007BA7", "#FE6F5E")) +
+        labs(x = "Season", y = "Uplift potential (m/s)", fill = "Season") +
+        theme_classic() +
+        theme(axis.text = element_text(color = "black"),
+              axis.line = element_line(linewidth = 1.5),
+              text = element_text(size = 25)))
+dev.off()
+
+# look at homogeneity
+fac_labs <- c("Fall", "Spring")
+names(fac_labs) <- c("post", "pre")
+w_star_var <- ggplot(a_data, aes(as.factor(migrations), w_star, group = as.factor(migrations), 
+                                 fill = season, alpha = forcats::fct_rev(as.factor(migrations))))+
+  geom_boxplot() +
+  scale_fill_manual(values = c("#FE6F5E", "#007BA7")) +
+  scale_alpha_discrete(
+    range = c(0.3, 0.9),
+    guide = guide_legend(override.aes = list(fill = "black"))) +
+  labs(x = "", y = "Uplift potential (m/s)", fill = "Season") +
+  theme_classic() +
+  theme(text = element_text(size = 20, color = "black"),
+        axis.text = element_text(size = 15, color = "black"),
+        legend.position = "none") +
+  facet_wrap(~season, labeller = labeller(season = fac_labs))
+dens_var <- ggplot(a_data, aes(as.factor(migrations), ud_pdf, group = as.factor(migrations), 
+                               fill = season, alpha = forcats::fct_rev(as.factor(migrations)))) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("#FE6F5E", "#007BA7")) +
+  scale_alpha_discrete(
+    range = c(0.3, 0.9),
+    guide = guide_legend(override.aes = list(fill = "black"))) +
+  labs(x = "Migration", y = "Conspecific density", fill = "Season") +
+  theme_classic() +
+  theme(text = element_text(size = 20, color = "black"),
+        axis.text = element_text(size = 15, color = "black"),
+        legend.position = "none") +
+  facet_wrap(~season, labeller = labeller(season = fac_labs))
+
+vars_plot <-  plot_grid(w_star_var, dens_var, labels = c("A", "B"), ncol = 1,
+                        align = 'v', axis = 'l')
+
+png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/distributions.png",
+    height = 200, width = 300, units = "mm", res = 500)
+vars_plot
+dev.off()
 
 ### plots for the models
 
+# look at model predictions for the 3-term interaction in spring
 png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/preds_glmm_spring_3_08-26.png",
     height = 18, width = 20, units = "in", res = 300)
 ggplot(pre_preds %>%  
@@ -132,6 +195,7 @@ ggplot(pre_preds %>%
   facet_wrap(~as.factor(label))
 dev.off()
 
+# look at model predictions for the 3-term interaction in fall
 png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/preds_glmm_fall_3_08-26.png",
     height = 18, width = 20, units = "in", res = 300)
 ggplot(post_preds %>%  
@@ -152,6 +216,16 @@ ggplot(post_preds %>%
   facet_wrap(~as.factor(label))
 dev.off()
 
+# look at the 3-term interaction in 3D
+i_data <- pre_preds %>%  
+  filter(interaction == "uplift_migration_ud") %>% 
+  dplyr::select("migrations", "sqrt_ud", "w_star", "probs")
+plot3D::scatter3D(x = i_data$migrations, z = i_data$w_star, y = i_data$sqrt_ud, 
+                  colvar = i_data$probs, col = colfunc(135), pch = 16, alpha = .4, 
+                  cex = 1.5, xlab = "Migrations", zlab = "Uplift (m/s)", ylab = "Conspecific density",
+                  ticktype = "detailed")
+
+# look at model predictions for the 2-term interactions with the 3rd term held at its mean
 inter_plots <- function(data, x_id, y_id, xlab, ylab, xmin, xmax){
   ggplot(data, aes_string(x_id, y_id, fill = "probs")) +
     geom_tile(color = "white", lwd = 1.5, linetype = 1) +
@@ -225,86 +299,14 @@ png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/preds_glmm_sqrt_ud_0
 print(full_plot + draw_grob(legend, scale = 0.7, x = 0.4))
 dev.off()
 
-library(plotly)
-plot_ly(z = as.matrix(a_data[, c("migrations", "w_star", "sqrt_ud_z")])) %>% add_surface()
-
-# interpolate data onto grid
-test_plotly <- with(a_data[a_data$season == "post",], akima::interp(migrations, w_star, sqrt_ud,
-                                                                    duplicate = "mean"))
-# plot surface over grid
-axx <- list(title = "Migrations")
-axy <- list(title = "Uplift (m/s)")
-axz <- list(title = "Conspecific density")
-plot_ly(x = test_plotly$x, y = test_plotly$y, z = test_plotly$z,
-        type = "surface") %>% 
-  layout(scene = list(xaxis=axx,yaxis=axy,zaxis=axz))
-
-p <- inter_preds %>%  
-  filter(interaction == "uplift_migration_ud") %>% 
-  ggplot(aes(x = "migrations", y = "w_star", z = "sqrt_ud")) +  
-  geom_contour() +  
-  scale_fill_distiller(palette = "Spectral", direction = -1)
-ggplotly(p)
-
-grd_3 <- expand.grid(x = (1:max(prep_d$migrations)),
-                     y = seq(from = min(prep_d$w_star, na.rm = T), to = max(prep_d$w_star, na.rm = T), length.out = 15),
-                     z = seq(from = min(prep_d$sqrt_ud, na.rm = T), to = max(prep_d$sqrt_ud, na.rm = T), length.out = 15)) %>% # quantile(prep_d$w_star, .9, na.rm = T)
-  rename(migrations = x,
-         w_star = y,
-         sqrt_ud = z) %>% 
-  mutate(step_length = mean(prep_d$step_length, na.rm = T),
-         turning_angle = mean(prep_d$turning_angle, na.rm = T),
-         interaction = "uplift_migration_ud")
-
-plot3D::scatter3D(x = i_data$migrations, y = i_data$w_star, z = i_data$sqrt_ud, colvar = i_data$probs)
-rgl::surface3d(x = i_data$migrations, y = i_data$w_star, z = i_data$sqrt_ud)
-
-i_data <- inter_preds %>%  
+library(rayshader)
+i_data <- pre_preds %>%  
   filter(interaction == "uplift_migration_ud") %>% 
   dplyr::select("migrations", "sqrt_ud", "w_star", "probs") %>% 
-  rename(x = "migrations", 
-         y = "sqrt_ud",
-         z = "w_star",
-         value = "probs")
-
-p <- ggplot(i_data, aes(z, y, fill = value)) +
-  geom_tile(color = "white", lwd = 0, linetype = 1) +
-  scale_fill_gradientn(colors = colfunc(135)) +
-  # scale_y_continuous(expand=c(0, 0))+
-  # scale_x_continuous(expand=c(0, 0),
-  # breaks=round(seq(from = min(y), to = max(y), length.out = 9), digits = 1))+
-  labs(x = "Uplift (m/s)", y = "Conspecific density", fill = "Selection probability") +
-  theme_classic() +
-  theme(axis.text = element_text(color = "black", size = 15),
-        axis.line = element_line(linewidth = 1.2),
-        text = element_text(size = 20),
-        legend.text = element_text(size = 15),
-        legend.position = "none") +
-  facet_wrap(~x, strip.position="left") #+
-# gganimate::transition_states(x,
-#                   transition_length = 4,
-#                   state_length = 0.2,
-#                   wrap = F) +
-# gganimate::exit_fade() +
-# labs(title = "Migration {closest_state}") 
-
-png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/facet_spring_3d.png",
-    height = 18, width = 20, units = "in", res = 500)
-plot_gg(p,multicore = TRUE,width=10,height=8,scale=250,windowsize=c(1400,866),
-        zoom = 0.8, phi = 60, theta = -30)
-render_snapshot(clear = TRUE)
-dev.off()
-
-library(raster)
-xyz <- rasterFromXYZ(i_data[1:8, 1:3], res=c(NA,NA), crs="", digits=5)
-xyz <- raster(xmn = min(i_data$x), xmx = max(i_data$x),
-              ymn = min(i_data$y), ymx = max(i_data$y),
-              ncols = 8, nrows = 15)
-raster::setValues(xyz, i_data$z)
-rasterVis::plot3D(xyz)
-# install.packages("rayshader")
-library(rayshader)
-library(ggplot2)
+  rename(x = migrations,
+         y = sqrt_ud,
+         z = w_star,
+         value = probs)
 heatmap_fill <- ggplot(i_data %>% group_by(x, y) %>% slice_sample(n = 1) %>% ungroup()) +
   geom_tile(aes(x, y, fill = value, color = z)) +
   scale_fill_gradientn(colors = colfunc(135)) +
@@ -320,22 +322,7 @@ rayshader::plot_gg(heatmap_fill, heatmap_height, multicore = TRUE, raytrace = TR
                    scale = 300, windowsize = c(1400, 866), zoom = 0.6, phi = 30, theta = 30);
 render_snapshot(clear = TRUE)
 
-
-
-ex <- expand.grid(x = 1:8,
-                  y = seq(from = -1.85, to = 3.58, length.out = 15),
-                  z = seq(from = 0, to = 2.41, length.out = 15)) %>% 
-  mutate(value = sample(seq(from = 0, to = 1, length.out = 3000), 1800))
-
-vol <- simplify2array(by(i_data, i_data$x, as.matrix))
-
-library(misc3d)
-con <- misc3d::computeContour3d(vol, max(vol), 1)
-misc3d::drawScene(makeTriangles(con))
-contour3d(vol, 1)
-
-
-
+# look at the actual model results
 pre_graph <- confint(pre_mod) %>% 
   as.data.frame() %>% 
   rownames_to_column(var = "Factor") %>% 
@@ -409,40 +396,3 @@ coefs_plot
 dev.off()
 
 
-# look at homogeneity
-fac_labs <- c("Fall", "Spring")
-names(fac_labs) <- c("post", "pre")
-w_star_var <- ggplot(a_data, aes(as.factor(migrations), w_star, group = as.factor(migrations), 
-                                 fill = season, alpha = forcats::fct_rev(as.factor(migrations))))+
-  geom_boxplot() +
-  scale_fill_manual(values = c("#FE6F5E", "#007BA7")) +
-  scale_alpha_discrete(
-    range = c(0.3, 0.9),
-    guide = guide_legend(override.aes = list(fill = "black"))) +
-  labs(x = "", y = "Uplift potential (m/s)", fill = "Season") +
-  theme_classic() +
-  theme(text = element_text(size = 20, color = "black"),
-        axis.text = element_text(size = 15, color = "black"),
-        legend.position = "none") +
-  facet_wrap(~season, labeller = labeller(season = fac_labs))
-dens_var <- ggplot(a_data, aes(as.factor(migrations), ud_pdf, group = as.factor(migrations), 
-                               fill = season, alpha = forcats::fct_rev(as.factor(migrations)))) +
-  geom_boxplot() +
-  scale_fill_manual(values = c("#FE6F5E", "#007BA7")) +
-  scale_alpha_discrete(
-    range = c(0.3, 0.9),
-    guide = guide_legend(override.aes = list(fill = "black"))) +
-  labs(x = "Migration", y = "Conspecific density", fill = "Season") +
-  theme_classic() +
-  theme(text = element_text(size = 20, color = "black"),
-        axis.text = element_text(size = 15, color = "black"),
-        legend.position = "none") +
-  facet_wrap(~season, labeller = labeller(season = fac_labs))
-
-vars_plot <-  plot_grid(w_star_var, dens_var, labels = c("A", "B"), ncol = 1,
-                        align = 'v', axis = 'l')
-
-png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/distributions.png",
-    height = 200, width = 300, units = "mm", res = 500)
-vars_plot
-dev.off()
