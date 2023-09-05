@@ -3,6 +3,7 @@
 ### 2023-08-29
 ### hbronnvik@ab.mpg.de
 
+library(cowplot)
 library(tidyverse)
 
 # the processed data used to look at relationships within the data
@@ -30,6 +31,17 @@ fac_labs <- c("Fall", "Spring")
 names(fac_labs) <- c("post", "pre")
 
 ### plots for data exploration
+
+# look at uplift distributions
+png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/uplift_dists.png",
+    height = 18, width = 20, units = "in", res = 300)
+ggplot(a_data, aes(x = as.factor(migrations), y = w_star, fill = as.factor(used))) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("#0096CC", "#FE6D5D")) +
+  labs(x = "Migrations", y = "Uplift (m/s)", fill = "Use") +
+  theme_classic() +
+  facet_wrap(~season, labeller = labeller(season = fac_labs))
+dev.off()
 
 # look at wind support distributions
 support <- ggplot(a_data, aes(as.factor(migrations), wind_support, fill = as.logical(used))) + 
@@ -67,10 +79,10 @@ a_data$datestamp <- a_data$timestamp
 year(a_data$datestamp) <- 2024
 
 # look at the number of recordings of migration on each day for each age group
-png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/migration_timing.png",
+png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/migration_timing_sp23.png",
     height = 18, width = 20, units = "in", res = 300)
 a_data %>% 
-  mutate(yd = date(datestamp)) %>% 
+  mutate(yd = date(alignment)) %>% 
   group_by(yd, migrations) %>% 
   mutate(count = n()) %>% 
   slice(1) %>%
@@ -105,6 +117,8 @@ ggplot(a_data %>% mutate(season = ifelse(season == "pre", "Spring", "Fall")), ae
 dev.off()
 
 # look at conspecific density distributions per age group
+png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/density_dists.png",
+    height = 18, width = 20, units = "in", res = 300)
 ggplot(a_data, aes(x = as.factor(migrations), y = ud_pdf, fill = as.factor(used))) +
   geom_boxplot(lwd = 1.5, aes(alpha = forcats::fct_rev(as.factor(migrations)))) +
   scale_fill_manual(values = c("#0096CC", "#FE6D5D")) + 
@@ -115,6 +129,7 @@ ggplot(a_data, aes(x = as.factor(migrations), y = ud_pdf, fill = as.factor(used)
         axis.line = element_line(color = "black"),
         axis.text = element_text(color = "black")) +
   facet_wrap(~season, labeller = labeller(season = fac_labs))
+dev.off()
 
 # look at uplift distributions per season
 res_aov <- aov(w_star ~ factor(season), data = a_data)
@@ -134,7 +149,7 @@ print(ggplot(a_data %>% mutate(season = ifelse(season == "post", "Fall", "Spring
               text = element_text(size = 25)))
 dev.off()
 
-# look at homogeneity
+# look at overall distributions
 fac_labs <- c("Fall", "Spring")
 names(fac_labs) <- c("post", "pre")
 w_star_var <- ggplot(a_data, aes(as.factor(migrations), w_star, group = as.factor(migrations), 
@@ -172,48 +187,122 @@ png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/distributions.png",
 vars_plot
 dev.off()
 
+# look at the distributions of variances
+
+k_data <- a_data %>% 
+  group_by(stratum) %>% 
+  mutate(obs_diff = w_star[which(used == 1)]-mean(w_star[which(used == 0)]),
+         strat_var_w = var(w_star),
+         strat_var_s = var(ud_pdf)) %>% 
+  slice(1) %>% 
+  ungroup()
+w_dens <- ggplot(k_data, aes(log(strat_var_w), fill = as.factor(migrations))) +
+  geom_density(alpha = 0.4) +
+  scale_fill_manual(values = colfunc(9)) +
+  labs(x = "log per-hour variance in uplift", y = "Density", fill = "Migrations") +
+  theme_classic()  +
+  theme(axis.text = element_text(color = "black", size = 35),
+        axis.line = element_line(linewidth = 1.2),
+        text = element_text(size = 45),
+        legend.text = element_text(size = 35),
+        strip.text.x = element_text(size = 30),
+        legend.key.size = unit(1.5, 'cm')) +
+  facet_wrap(~season, labeller = labeller(season = fac_labs))
+s_dens <- ggplot(k_data, aes(log(strat_var_s), fill = as.factor(migrations))) +
+  geom_density(alpha = 0.4) +
+  scale_fill_manual(values = colfunc(9)) +
+  labs(x = "log per-hour variance in conspecific density", y = "Density", fill = "Migrations") +
+  theme_classic() +
+  theme(axis.text = element_text(color = "black", size = 35),
+        axis.line = element_line(linewidth = 1.2),
+        text = element_text(size = 45),
+        legend.text = element_text(size = 35),
+        strip.text.x = element_text(size = 30),
+        legend.key.size = unit(1.5, 'cm')) +
+  facet_wrap(~season, labeller = labeller(season = fac_labs))
+png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/stratum_densities.png",
+    height = 18, width = 20, units = "in", res = 300)
+plot_grid(s_dens, w_dens, ncol = 1, align = 'v', axis = 'l')
+dev.off()
+
+
 ### plots for the models
 
 # look at model predictions for the 3-term interaction in spring
-png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/preds_glmm_spring_3_08-26.png",
+my_labels <- c("Low", "Mean", "High")
+png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/preds_glmm_spring_3_09-04.png",
     height = 18, width = 20, units = "in", res = 300)
 ggplot(pre_preds %>%  
          filter(interaction == "uplift_migration_ud") %>% 
          mutate(label = paste0("Spring ", migrations))) +
   geom_raster(aes(x = w_star, y = sqrt_ud, fill = probs, group = probs), interpolate = F) +
   # geom_contour(aes(x = z, y = y, z = value), color = "black") +
-  scale_x_continuous(expand = c(0, 0), n.breaks = 11) +
-  scale_y_continuous(expand = c(0, 0), n.breaks = 6) +
+  scale_x_continuous(expand = c(0, 0), n.breaks = 4) +
+  scale_y_continuous(expand = c(0, 0), breaks = c(0,8.867e-07,1.755e-06), labels = my_labels) +
   labs(x = "Uplift (m/s)", y = "Conspecific density") +
-  scale_fill_gradientn("Selection", colours = colfunc(135)) +
+  scale_fill_gradientn("Selection \nprobability", colours = colfunc(135)) +
   theme_classic() +
-  theme(axis.text = element_text(color = "black", size = 20),
+  theme(axis.text = element_text(color = "black", size = 35),
         axis.line = element_line(linewidth = 1.2),
-        text = element_text(size = 25),
-        legend.text = element_text(size = 25),
-        strip.text.x = element_text(size = 30)) +
+        text = element_text(size = 45),
+        legend.text = element_text(size = 35),
+        strip.text.x = element_text(size = 30),
+        legend.key.size = unit(1.5, 'cm')) +
   facet_wrap(~as.factor(label))
 dev.off()
 
 # look at model predictions for the 3-term interaction in fall
-png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/preds_glmm_fall_3_08-26.png",
+png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/preds_glmm_fall_3_09-04.png",
     height = 18, width = 20, units = "in", res = 300)
 ggplot(post_preds %>%  
          filter(interaction == "uplift_migration_ud") %>% 
          mutate(label = paste0("Fall ", migrations))) +
   geom_raster(aes(x = w_star, y = sqrt_ud, fill = probs, group = probs), interpolate = F) +
   # geom_contour(aes(x = z, y = y, z = value), color = "black") +
-  scale_x_continuous(expand = c(0, 0)) +
-  scale_y_continuous(expand = c(0, 0)) +
+  scale_x_continuous(expand = c(0, 0), n.breaks = 4) +
+  scale_y_continuous(expand = c(0, 0), breaks = c(1.489e-07,1.121e-06,2.092e-06), labels = my_labels) +
   labs(x = "Uplift (m/s)", y = "Conspecific density") +
-  scale_fill_gradientn("Selection", colours = colfunc(10)) +
+  scale_fill_gradientn("Selection \nprobability", colours = colfunc(10)) +
   theme_classic() +
-  theme(axis.text = element_text(color = "black", size = 20),
+  theme(axis.text = element_text(color = "black", size = 35),
         axis.line = element_line(linewidth = 1.2),
-        text = element_text(size = 25),
-        legend.text = element_text(size = 25),
-        strip.text.x = element_text(size = 30)) +
+        text = element_text(size = 45),
+        legend.text = element_text(size = 35),
+        strip.text.x = element_text(size = 30),
+        legend.key.size = unit(1.5, 'cm')) +
   facet_wrap(~as.factor(label))
+dev.off()
+
+# produce expectations
+ex <- expand.grid(x = 1:2, y = 1:2)
+ex$probs <- ifelse(ex$x == 2 | ex$y == 2, 0.5, 1)
+ex$probs <- ifelse(ex$y == 2 & ex$x == 2, 0, ex$probs)
+
+  yPosxNon <-
+  ggplot(ex) +
+  geom_raster(aes(x = x, y = y, fill = probs, group = probs), interpolate = F) +
+  geom_hline(yintercept = 1.5, lwd = 1.5) +
+  geom_vline(xintercept = 1.5, lwd = 1.5) +
+  scale_x_continuous(expand = c(0, 0), n.breaks = 9) +
+  scale_y_continuous(expand = c(0, 0), n.breaks = 6) +
+  labs(x = "X", y = "Y", title = "Selection for Y and against X") +
+  scale_fill_gradientn("Selection \nprobability", colours = colfunc(135)) +
+  theme_classic() +
+  theme(axis.text = element_text(color = "white", size = 0),
+        axis.line = element_line(linewidth = 1.2),
+        text = element_text(size = 45),
+        legend.text = element_text(size = 35),
+        strip.text.x = element_text(size = 30),
+        legend.key.size = unit(1.5, 'cm'),
+        axis.ticks = element_blank(),
+        legend.position = "none")
+  
+  xyNeg <- xyNeg + theme(text = element_text(size = 25))
+
+png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/preds_template.png",
+    height = 18, width = 20, units = "in", res = 600)
+cowplot::plot_grid(xyNon, xyPos, yPos, yPosxNon, xNeg, xyNeg, yNeg, xPosyNon, xPos, ncol = 3,
+          align = 'v', axis = 'l', label_size = 10)
 dev.off()
 
 # look at the 3-term interaction in 3D
@@ -228,7 +317,7 @@ plot3D::scatter3D(x = i_data$migrations, z = i_data$w_star, y = i_data$sqrt_ud,
 # look at model predictions for the 2-term interactions with the 3rd term held at its mean
 inter_plots <- function(data, x_id, y_id, xlab, ylab, xmin, xmax){
   ggplot(data, aes_string(x_id, y_id, fill = "probs")) +
-    geom_tile(color = "white", lwd = 1.5, linetype = 1) +
+    geom_tile(color = "white", lwd = 0, linetype = 1) +
     scale_fill_gradientn(colors = colfunc(135)) +
     scale_y_continuous(expand=c(0, 0))+
     scale_x_continuous(expand=c(0, 0),
@@ -365,33 +454,33 @@ post_coefs <- ggplot(post_graph %>% filter(Variable != "Fall migrations"), aes(E
   geom_vline(xintercept = 0, lty = 2, linewidth = 1) +
   geom_pointrange(aes(xmin = Lower, xmax = Upper), #fill = significance_05, color = significance_05), 
                   linewidth = 1, size = 1) +
-  scale_color_manual(values = c("#bd68ee", "#f48c3d")) +
   labs(y = "", fill = "Significant", color = "Significant", title = "Fall") +
   theme_classic() +
-  annotate(geom="text", x=16, y=c(1:6), label=post_graph$significance[post_graph$Variable != "Fall migrations"], color="black", size = 6) +
-  theme(axis.text = element_text(color = "black", size = 15),
-        axis.line = element_line(linewidth = 1),
-        text = element_text(size = 15),
-        legend.text = element_text(size = 10))
+  ggplot2::annotate(geom="text", x=16, y=c(1:6), label=post_graph$significance[post_graph$Variable != "Fall migrations"], color="black", size = 6)  +
+  theme(axis.text = element_text(color = "black", size = 18),
+        axis.line = element_line(linewidth = 1.2),
+        text = element_text(size = 25),
+        legend.text = element_text(size = 35),
+        legend.key.size = unit(1.5, 'cm')) 
 pre_coefs <- ggplot(pre_graph %>% filter(Variable != "Spring migrations"), aes(Estimate, Variable)) +
   geom_vline(xintercept = 0, lty = 2, linewidth = 1) +
   geom_pointrange(aes(xmin = Lower, xmax = Upper), #fill = significance_05, color = significance_05), 
                   linewidth = 1, size = 1) +
-  scale_color_manual(values = c("#bd68ee", "#f48c3d")) +
   labs(y = "", fill = "Significant", color = "Significant", title = "Spring") +
   theme_classic() +
-  annotate(geom="text", x=5, y=c(1:6), label=pre_graph$significance[pre_graph$Variable != "Spring migrations"], color="black", size = 6) +
-  theme(axis.text = element_text(color = "black", size = 15),
-        axis.line = element_line(linewidth = 1),
-        text = element_text(size = 15),
-        legend.text = element_text(size = 10))
+  ggplot2::annotate(geom="text", x=5, y=c(1:6), label=pre_graph$significance[pre_graph$Variable != "Spring migrations"], color="black", size = 6)  +
+  theme(axis.text = element_text(color = "black", size = 18),
+        axis.line = element_line(linewidth = 1.2),
+        text = element_text(size = 25),
+        legend.text = element_text(size = 35),
+        legend.key.size = unit(1.5, 'cm'))
 
 coefs_plot <-  plot_grid(post_coefs, pre_coefs, labels = c("A", "B"), nrow = 2,
                          align = 'v', axis = 'l')
 coefs_plot
 
-png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/coefs_glmm.png",
-    height = 150, width = 300, units = "mm", res = 500)
+png(filename = "/home/hbronnvik/Documents/storkSSFs/figures/coefs_glmm_05-09.png",
+    height = 200, width = 300, units = "mm", res = 500)
 coefs_plot
 dev.off()
 
