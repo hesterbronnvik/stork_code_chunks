@@ -80,64 +80,64 @@ flight_acc <- lapply(1:length(gps_files), function(x){
         filter(date %in% track$date)
       return(ex)
     }) %>% reduce(rbind)
-  
-  if(nrow(gex) > 0){
-    # load the matching ACC data
-    aex <- readRDS(acc_files[grepl(unique(gex$individual.id), acc_files)])
-    # s_id <- info$study[info$individual.id == unique(gex$individual.id)]
-    # aex <- getMovebankNonLocationData(study = s_id, animalName = unique(gex$individual.id),
-    #                                   sensorID = 2365683, login = loginStored)
-    # filter ACC data to the migrations
-    aex <- lapply(split(rec, rec$trackID), function(track){
-      ex <- aex %>% 
-        mutate(trackID = unique(track$trackID)) %>% 
-        filter(date(timestamp) %in% track$date)
-      return(ex)
-    }) %>% reduce(rbind)
     
-    aex <- aex %>% 
-      filter(round_date(timestamp, "minute") %in% unique(round_date(gex$timestamp, "minute")))
-    
-    # attach whether this is a classified flight burst to the ACC data
-    aex <- lapply(1:nrow(aex), function(n){
-      # print(n)
-      acc <- aex[n,]
-      # use the time from the ACC
-      ts <- round_date(acc$timestamp, "minute")
-      # extract the GPS burst(s) containing that minute
-      burst_oi <- unique(gex$burstID[gex$minute == ts])
-      # if there is a burst, then the ACC followed GPS classified flight, else it did not
-      if(length(burst_oi) == 0){
-        acc$flight <- F
-        acc$location.long <- NA
-        acc$location.lat <- NA
-        acc$burstID <- NA
-      }else{
-        # take the GPS burst with the closest timestamp to the ACC
-        burst_oi <- gex %>% 
-          filter(burstID %in% burst_oi) %>% 
-          dplyr::select(timestamp, burstID) %>% 
-          mutate(prox = timestamp - acc$timestamp) %>% 
-          filter(abs(prox) == min(abs(prox))) %>% 
-          dplyr::select(burstID) %>% 
-          deframe() %>% 
-          unique()
-        acc$flight <- T
-        # the last location before the ACC burst started
-        acc$location.long <- gex$location.long[gex$burstID == burst_oi][nrow(gex[gex$burstID == burst_oi,])]
-        acc$location.lat <- gex$location.lat[gex$burstID == burst_oi][nrow(gex[gex$burstID == burst_oi,])]
-        acc$burstID <- burst_oi
-      }
-      return(acc)
-    }) %>% reduce(rbind)
-    
-    # keep the ACC data that were on migration and in flight
-    acc_remaining <- aex %>% 
-      filter(flight == T) %>% 
-      mutate(date = date(timestamp)) %>% 
-      left_join(rec[, c("date", "ld_day")], by = join_by(date)) %>% 
-      left_join(meta[, c("trackID", "migration")], by = join_by(trackID)) 
-    return(acc_remaining)
+    if(nrow(gex) > 0){
+      # load the matching ACC data
+      aex <- readRDS(acc_files[grepl(unique(gex$individual.id), acc_files)])
+      # s_id <- info$study[info$individual.id == unique(gex$individual.id)]
+      # aex <- getMovebankNonLocationData(study = s_id, animalName = unique(gex$individual.id),
+      #                                   sensorID = 2365683, login = loginStored)
+      # filter ACC data to the migrations
+      aex <- lapply(split(rec, rec$trackID), function(track){
+        ex <- aex %>% 
+          mutate(trackID = unique(track$trackID)) %>% 
+          filter(date(timestamp) %in% track$date)
+        return(ex)
+      }) %>% reduce(rbind)
+      
+      aex <- aex %>% 
+        filter(round_date(timestamp, "minute") %in% unique(round_date(gex$timestamp, "minute")))
+      
+      # attach whether this is a classified flight burst to the ACC data
+      aex <- lapply(1:nrow(aex), function(n){
+        # print(n)
+        acc <- aex[n,]
+        # use the time from the ACC
+        ts <- round_date(acc$timestamp, "minute")
+        # extract the GPS burst(s) containing that minute
+        burst_oi <- unique(gex$burstID[gex$minute == ts])
+        # if there is a burst, then the ACC followed GPS classified flight, else it did not
+        if(length(burst_oi) == 0){
+          acc$flight <- F
+          acc$location.long <- NA
+          acc$location.lat <- NA
+          acc$burstID <- NA
+        }else{
+          # take the GPS burst with the closest timestamp to the ACC
+          burst_oi <- gex %>% 
+            filter(burstID %in% burst_oi) %>% 
+            dplyr::select(timestamp, burstID) %>% 
+            mutate(prox = timestamp - acc$timestamp) %>% 
+            filter(abs(prox) == min(abs(prox))) %>% 
+            dplyr::select(burstID) %>% 
+            deframe() %>% 
+            unique()
+          acc$flight <- T
+          # the last location before the ACC burst started
+          acc$location.long <- gex$location.long[gex$burstID == burst_oi][nrow(gex[gex$burstID == burst_oi,])]
+          acc$location.lat <- gex$location.lat[gex$burstID == burst_oi][nrow(gex[gex$burstID == burst_oi,])]
+          acc$burstID <- burst_oi
+        }
+        return(acc)
+      }) %>% reduce(rbind)
+      
+      # keep the ACC data that were on migration and in flight
+      acc_remaining <- aex %>% 
+        filter(flight == T) %>% 
+        mutate(date = date(timestamp)) %>% 
+        left_join(rec[, c("date", "ld_day")], by = join_by(date)) %>% 
+        left_join(meta[, c("trackID", "migration")], by = join_by(trackID)) 
+      return(acc_remaining)
     }
   }
 })
@@ -373,15 +373,17 @@ ggplot(buildDBA, aes(behavior, dba_res, fill = behavior)) +
   theme(legend.position = "none")
 # dev.off()
 
-metad <- lapply(studies, function(x){
-  md <- getMovebankReferenceTable(study = x, login = loginStored) %>%
-    drop_na(animal_id) %>%
-    filter(sensor_type_id == 653) %>% 
-    dplyr::select(animal_id, deploy_on_timestamp) %>% 
-    mutate(deploy_on_timestamp = date(deploy_on_timestamp)) %>% 
-    rename(individual.id = animal_id)
-  return(md)
-}) %>% reduce(rbind)
+# metad <- lapply(studies, function(x){
+#   md <- getMovebankReferenceTable(study = x, login = loginStored) %>%
+#     drop_na(animal_id) %>%
+#     filter(sensor_type_id == 653) %>% 
+#     dplyr::select(animal_id, deploy_on_timestamp) %>% 
+#     mutate(deploy_on_timestamp = date(deploy_on_timestamp)) %>% 
+#     rename(individual.id = animal_id)
+#   return(md)
+# }) %>% reduce(rbind)
+# saveRDS(metad, file = "/home/hbronnvik/Documents/chapter2/deploy_on_times.rds")
+metad <- readRDS("/home/hbronnvik/Documents/chapter2/deploy_on_times.rds")
 
 # thermal data with wind vectors attached
 classified <- lapply(list.files("/home/hbronnvik/Documents/chapter2/wind_thermal_data/", pattern = "2024-01-16|2024-01-17", full.names = T), readRDS)
@@ -618,11 +620,31 @@ thermal_other <- thermal_other %>%
   filter(between(out_secs, 10, 60)) 
 
 flaps <- flapping %>% 
-  drop_na(burst_id)
+  drop_na(burst_id) %>% 
+  mutate(burst_ind_ID = paste(individual_id, burst_id, sep = "_"))
 flaps <- flaps[!duplicated(flaps$burst_ind_ID),]
 build <- thermal_other %>% 
   left_join(flaps[, c("burst_ind_ID", "behavior")]) %>% 
   mutate(migration = paste0("Migration ", journey_number))
+
+build %>% 
+  drop_na(behavior) %>% 
+  ggplot(aes(behavior, )) +
+  geom_boxplot()
+build %>% 
+  drop_na(behavior) %>% 
+  ggplot(aes(behavior, exit_vspeed)) +
+  geom_boxplot()
+build %>% 
+  drop_na(behavior) %>% 
+  ggplot(aes(behavior, final_height)) +
+  geom_boxplot()
+build %>% 
+  drop_na(behavior) %>% 
+  filter(season == "fall") %>% 
+  ggplot(aes(behavior, avg_wind_speed_pre)) +
+  geom_boxplot() +
+  facet_wrap(~migration)
 
 ms <- build %>% 
   group_by(burst_ind_ID) %>% 
@@ -702,13 +724,12 @@ thermal_other %>%
   geom_point(aes(color = n_thermals), cex = .5) +
   scale_color_gradientn(colors = colfuncBright(200)) +
   geom_smooth(method = "lm", color = "black", aes(lty = migration)) +
-  # coord_fixed() +
+  coord_fixed() +
   labs(x = "log falling to thermals ratio (per day)", y = "log flapping to \nbursts ratio (per day)", 
        color = "Sample size", lty = "") +
   theme(text = element_text(size = 15),
         axis.text = element_text(size = 10)) 
 dev.off()
-
 
 
 model_data <- flight_wind_acc %>% 
@@ -791,8 +812,8 @@ yr_coefs <- cis %>%
 
 grd_yr <- expand.grid(journey_number = 1:3,
                       sqrt_vspeed = seq(from = quantile(model_data$sqrt_vspeed, 0.025, na.rm = T), 
-                                           to = quantile(model_data$sqrt_vspeed, 0.975, na.rm = T), 
-                                           length.out = 100)) %>%
+                                        to = quantile(model_data$sqrt_vspeed, 0.975, na.rm = T), 
+                                        length.out = 100)) %>%
   mutate(location.lat = mean(model_data$location.lat, na.rm = T),
          # dba_res = mean(model_data$dba_res, na.rm = T),
          interaction = "age_climb")
@@ -807,12 +828,12 @@ new_data_only <- model_data %>%
   bind_cols(grd_yr) %>% 
   #calculate z-scores. get the mean(center) and sd(scale) from the previous z transformation. for consistency
   mutate(#log_turn_var_thermal_z = (log_turn_var_thermal - mean(model_data$log_turn_var_thermal))/(sd(model_data$log_turn_var_thermal)),
-         # boxcox_n.changes_z = (boxcox_n.changes - mean(model_data$boxcox_n.changes))/(sd(model_data$boxcox_n.changes)),
-         sqrt_vspeed_z = (sqrt_vspeed - mean(model_data$sqrt_vspeed, na.rm = T))/(sd(model_data$sqrt_vspeed, na.rm = T)),
-         journey_number_z = (journey_number - mean(model_data$journey_number))/(sd(model_data$journey_number)),
-         location.lat_z = (location.lat - mean(model_data$location.lat, na.rm = T))/(sd(model_data$location.lat, na.rm = T)),
-         # avg_wind_speed_z = (avg_wind_speed - mean(model_data$avg_wind_speed, na.rm = T))/(sd(model_data$avg_wind_speed, na.rm = T))
-         dba_res_z = (dba_res - mean(model_data$dba_res, na.rm = T))/(sd(model_data$dba_res, na.rm = T)))
+    # boxcox_n.changes_z = (boxcox_n.changes - mean(model_data$boxcox_n.changes))/(sd(model_data$boxcox_n.changes)),
+    sqrt_vspeed_z = (sqrt_vspeed - mean(model_data$sqrt_vspeed, na.rm = T))/(sd(model_data$sqrt_vspeed, na.rm = T)),
+    journey_number_z = (journey_number - mean(model_data$journey_number))/(sd(model_data$journey_number)),
+    location.lat_z = (location.lat - mean(model_data$location.lat, na.rm = T))/(sd(model_data$location.lat, na.rm = T)),
+    # avg_wind_speed_z = (avg_wind_speed - mean(model_data$avg_wind_speed, na.rm = T))/(sd(model_data$avg_wind_speed, na.rm = T))
+    dba_res_z = (dba_res - mean(model_data$dba_res, na.rm = T))/(sd(model_data$dba_res, na.rm = T)))
 
 new_data <- model_data %>% 
   drop_na(sqrt_vspeed) %>% 
@@ -845,7 +866,7 @@ yr_tile <- inter_preds %>%
 png(filename = "/home/hbronnvik/Documents/chapter2/figures/look24/acc/11_VeDBA_vertAge.png",
     width = 11.5, height = 8.5, units = "in", res = 500)
 ggpubr::ggarrange(yr_coefs, yr_tile + theme(legend.position = "right"), 
-                       nrow = 1)
+                  nrow = 1)
 dev.off()
 
 # png(filename = "/home/hbronnvik/Documents/chapter2/figures/look24/acc/11_VeDBA_vertAge.png",
@@ -867,8 +888,8 @@ aw_coefs <- log_graph %>%
   rownames_to_column(var = "predictor") %>%
   filter(predictor != "(Intercept)") %>% 
   mutate(predictor = gsub("journey_number_z", "Migrations",
-                            gsub("mean_speed_z", "Wind speed",
-                                   gsub("location.lat_z", "Latitude", predictor))),
+                          gsub("mean_speed_z", "Wind speed",
+                               gsub("location.lat_z", "Latitude", predictor))),
          predictor = factor(predictor, levels = c("Latitude", "Wind speed", "Migrations", 
                                                   "Migrations:Latitude", "Migrations:Wind speed", "Latitude:Wind speed",
                                                   "Migrations:Latitude:Wind speed"))) %>%
@@ -909,7 +930,7 @@ new_data_only <- model_data %>%
     location.lat_z = (location.lat - mean(model_data$location.lat, na.rm = T))/(sd(model_data$location.lat, na.rm = T)),
     # avg_wind_speed_z = (avg_wind_speed - mean(model_data$avg_wind_speed, na.rm = T))/(sd(model_data$avg_wind_speed, na.rm = T))
     # dba_res_z = (dba_res - mean(model_data$dba_res, na.rm = T))/(sd(model_data$dba_res, na.rm = T))
-    )
+  )
 
 new_data <- model_data %>% 
   # drop_na(sqrt_vspeed) %>% 
@@ -933,7 +954,7 @@ inter_preds <- preds_pr %>%
 
 aw_tile3 <- inter_preds %>%
   filter(interaction == "map_age_wind") %>% 
-    mutate(migration = paste0("Migration ", journey_number)) %>% 
+  mutate(migration = paste0("Migration ", journey_number)) %>% 
   ggplot(aes(location.lat, mean_speed, fill = probs)) +
   geom_raster(interpolate = F) +
   scale_x_reverse(n.breaks = 7) +
@@ -944,8 +965,8 @@ aw_tile3 <- inter_preds %>%
                        # values = scales::rescale(c(min(inter_preds$probs),
                        #                            mean(inter_preds$probs),
                        #                            max(inter_preds$probs)))
-                       ) +
-    facet_wrap(~migration)
+  ) +
+  facet_wrap(~migration)
 
 aw_tile2 <- inter_preds %>%
   filter(interaction == "age_wind") %>% 
@@ -1036,22 +1057,22 @@ lapply(split(fob_mod_dat, fob_mod_dat$journey_number), function(falls){
            interaction = "map_fall")
   
   grd_fall_date <- expand.grid(x = seq(from = quantile(falls$log_falls, 0.025, na.rm = T), 
-                                      to = quantile(falls$log_falls, 0.975, na.rm = T), 
-                                      length.out = 20),
-                              z = seq(from = quantile(falls$avg_wind_speed_pre, 0.025, na.rm = T), 
-                                      to = quantile(falls$avg_wind_speed_pre, 0.975, na.rm = T), 
-                                      length.out = 20)) %>% 
+                                       to = quantile(falls$log_falls, 0.975, na.rm = T), 
+                                       length.out = 20),
+                               z = seq(from = quantile(falls$avg_wind_speed_pre, 0.025, na.rm = T), 
+                                       to = quantile(falls$avg_wind_speed_pre, 0.975, na.rm = T), 
+                                       length.out = 20)) %>% 
     rename(log_falls = x,
            avg_wind_speed_pre = z) %>% 
     mutate(location.lat = mean(falls$location.lat, na.rm = T),
            interaction = "date_fall")
   
   grd_map_date <- expand.grid(x = seq(from = quantile(falls$location.lat, 0.025, na.rm = T), 
-                                       to = quantile(falls$location.lat, 0.975, na.rm = T), 
-                                       length.out = 20),
-                               z = seq(from = quantile(falls$avg_wind_speed_pre, 0.025, na.rm = T), 
-                                       to = quantile(falls$avg_wind_speed_pre, 0.975, na.rm = T), 
-                                       length.out = 20)) %>% 
+                                      to = quantile(falls$location.lat, 0.975, na.rm = T), 
+                                      length.out = 20),
+                              z = seq(from = quantile(falls$avg_wind_speed_pre, 0.025, na.rm = T), 
+                                      to = quantile(falls$avg_wind_speed_pre, 0.975, na.rm = T), 
+                                      length.out = 20)) %>% 
     rename(location.lat = x,
            avg_wind_speed_pre = z) %>% 
     mutate(log_falls = mean(falls$log_falls, na.rm = T),
@@ -1094,7 +1115,7 @@ lapply(split(fob_mod_dat, fob_mod_dat$journey_number), function(falls){
   aw_tile3 <- inter_preds %>%
     filter(interaction == "map_date_fall") %>% 
     mutate(#avg_wind_speed_pre = sub("1970-", "", as.Date(avg_wind_speed_pre)),
-           location.lat = as.factor(round(location.lat))) %>% 
+      location.lat = as.factor(round(location.lat))) %>% 
     # mutate(migration = paste0("Migration ", journey_number)) %>% 
     ggplot(aes(avg_wind_speed_pre, log_falls, fill = probs)) +
     geom_tile() +
@@ -1151,3 +1172,238 @@ aw_tile2 <- inter_preds %>%
                        #                            mean(inter_preds$probs),
                        #                            max(inter_preds$probs)))
   )
+
+
+
+thermal_other <- thermal_other %>% 
+  filter(between(out_secs, 10, 60)) 
+
+flaps <- flapping %>% 
+  drop_na(burst_id) %>% 
+  mutate(burst_ind_ID = paste(individual_id, burst_id, sep = "_"))
+flaps <- flaps[!duplicated(flaps$burst_ind_ID),]
+build <- thermal_other %>% 
+  left_join(flaps[, c("burst_ind_ID", "behavior", "acc_stamp")]) %>% 
+  mutate(migration = paste0("Migration ", journey_number)) %>% 
+  rename(timestamp = acc_stamp)
+
+build %>% 
+  drop_na(behavior) %>% 
+  ggplot(aes(behavior, )) +
+  geom_boxplot()
+build %>% 
+  drop_na(behavior) %>% 
+  ggplot(aes(behavior, exit_vspeed)) +
+  geom_boxplot()
+build %>% 
+  drop_na(behavior) %>% 
+  ggplot(aes(behavior, final_height)) +
+  geom_boxplot()
+build %>% 
+  drop_na(behavior) %>% 
+  filter(season == "fall") %>% 
+  ggplot(aes(behavior, avg_wind_speed_pre)) +
+  geom_boxplot() +
+  facet_wrap(~migration)
+
+model_data <- build %>% 
+  filter(season == "fall") %>% 
+  group_by(location.lat) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  filter(season == "fall" & journey_number < 4) %>% 
+  mutate(individual.id = as.factor(individual.id),
+         migration = as.factor(journey_number),
+         # sqrt_vspeed = sqrt(vspeed_thermal),
+         # log_turn_var_thermal = log(turn_var_thermal),
+         sqrt_avg_pre = sqrt(avg_wind_speed_pre),
+         behavior = ifelse(behavior == "Flapping", 1, 0)) %>% 
+  dplyr::select(timestamp, location.lat, individual.id, ld_day, 
+                migration, journey_number, trackID, season, 
+                sqrt_avg_pre, behavior) %>% 
+  # drop_na(behavior) %>% 
+  # drop_na(sqrt_avg_pre) %>% 
+  # left_join(turn_df, by = join_by(thermal_event)) %>% 
+  mutate_at(c("location.lat","ld_day", "sqrt_avg_pre", "journey_number"), list(z = ~(scale(.))))
+
+library(lme4)
+
+# have skill respond to age et al.
+migrations_mod <- glmer(behavior ~ journey_number_z*sqrt_avg_pre_z*location.lat_z + (1|individual.id), 
+                        data = model_data, family = "binomial")
+
+summary(migrations_mod)
+cis <- confint(migrations_mod, method = "Wald") %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "pred") %>%
+  left_join(fixef(migrations_mod) %>% 
+              as.data.frame() %>% 
+              rename(fixef = ".") %>% 
+              rownames_to_column(var = "pred"), 
+            by = join_by(pred))
+# png(filename = "/home/hbronnvik/Documents/chapter2/figures/look24/acc/13_flaps_windAge.png",
+#     width = 11.5, height = 8.5, units = "in", res = 500)
+flap_coefs <- cis %>% 
+  slice(4:n()) %>% 
+  rename(lower = "2.5 %",
+         upper = "97.5 %") %>% 
+  # filter(pred %in% c("migration1", "migration2", "migration3", "avg_wind_speed_z", "location.lat_z")) %>% 
+  mutate(pred = sub("journey_number_z", "Age", 
+                    sub("sqrt_avg_pre_z", "Wind speed",
+                        sub("location.lat_z", "Latitude", pred)))) %>%
+  ggplot(aes(fixef, pred)) +
+  geom_vline(xintercept = 0, lty = 2, color = "gray40", lwd = 2) +
+  geom_pointrange(aes(xmin = lower, xmax = upper), color = "#007BA7", fatten = 8, lwd = 2) +
+  labs(x = "Effect on flapping (95% CI)", y = "Predictor", title = "Mean wind speed before a fall")
+# dev.off()
+
+grd_age_wind <- expand.grid(x = 1:3,
+                            z = seq(from = quantile(model_data$sqrt_avg_pre, 0.025, na.rm = T), 
+                                    to = quantile(model_data$sqrt_avg_pre, 0.975, na.rm = T), 
+                                    length.out = 100)) %>% 
+  rename(journey_number = x,
+         sqrt_avg_pre = z) %>% 
+  mutate(location.lat = mean(model_data$location.lat, na.rm = T),
+         interaction = "age_wind")
+
+# grd_all <- bind_rows(grd_fall_date, grd_fall_lat, grd_map_date, grd_3) 
+
+set.seed(770)
+n <- nrow(grd_age_wind)
+
+new_data_only <- model_data %>%
+  ungroup() %>% 
+  # group_by(individual.id) %>% 
+  # slice_sample(n = 1) %>% #randomly selects one row (from each stratum)
+  # ungroup() %>% 
+  slice_sample(n = n, replace = T) %>% #randomly select n of these strata. Make sure n is less than n_distinct(data$stratum)
+  # only keep the columns that I need
+  dplyr::select(c("individual.id")) %>% 
+  bind_cols(grd_age_wind) %>% 
+  #calculate z-scores. get the mean(center) and sd(scale) from the previous z transformation. for consistency
+  mutate(journey_number_z = (journey_number - mean(model_data$journey_number, na.rm = T))/(sd(model_data$journey_number, na.rm = T)),
+         sqrt_avg_pre_z = (sqrt_avg_pre - mean(model_data$sqrt_avg_pre, na.rm = T))/(sd(model_data$sqrt_avg_pre, na.rm = T)),
+         location.lat_z = (location.lat - mean(model_data$location.lat, na.rm = T))/(sd(model_data$location.lat, na.rm = T)))
+
+new_data <- model_data %>% 
+  mutate(interaction = "OG_data") %>% 
+  dplyr::select(names(new_data_only)) %>%  #only keep the columns that are necessary for the model
+  bind_rows(new_data_only) 
+
+# now that we have the values to predict, run the model on them
+preds <- predict(migrations_mod, newdata = new_data, type = "link", allow.new.levels = T)
+
+preds_pr <- new_data %>% 
+  mutate(preds = preds) %>% 
+  rowwise() %>% 
+  mutate(probs = gtools::inv.logit(preds)) #https://rpubs.com/crossxwill/logistic-poisson-prob
+
+inter_preds <- preds_pr %>% 
+  filter(interaction != "OG_data") 
+
+flap_preds <- inter_preds %>%
+  filter(interaction == "age_wind") %>% 
+  ggplot(aes(journey_number, sqrt_avg_pre, fill = probs)) +
+  geom_tile() +
+  labs(x = "Age", y = "Wind speed (m/s)", title = " ") +
+  scale_fill_gradientn("Probability", colors = colfunc(200), 
+                       n.breaks = 5,
+                       values = scales::rescale(c(min(inter_preds$probs),
+                                                  mean(inter_preds$probs),
+                                                  max(inter_preds$probs)))
+  )
+
+png(filename = "/home/hbronnvik/Documents/chapter2/figures/look24/acc/13_flaps_fall_windAge.png",
+    width = 11.5, height = 8.5, units = "in", res = 500)
+ggpubr::ggarrange(flap_coefs +
+                    coord_fixed(0.075), 
+                  flap_preds +
+                    coord_equal(), 
+                  nrow = 1)
+dev.off()
+
+
+data3 <- build %>%
+  filter(season == "fall") %>% 
+  drop_na(behavior) %>% 
+  group_by(location.lat) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  group_by(journey_number, behavior) %>%
+  summarize(obs = n()) %>%
+  pivot_wider(names_from = journey_number, values_from = obs) %>%
+  dplyr::select(-behavior)
+
+data_percentage <- apply(data3, 2, function(x){x*100/sum(x,na.rm=T)})
+# barplot(data_percentage, col = colfunc(2) , border = "white", xlab = "group")
+
+# png(filename = "/home/hbronnvik/Documents/chapter2/figures/look24/acc/14_flaps_fall_percent.png",
+#     width = 11.5, height = 8.5, units = "in", res = 500)
+data_percentage %>% 
+  as.data.frame() %>% 
+  pivot_longer(cols = c("1", "2", "3"), names_to = "migrations", values_to = "percents") %>% 
+  mutate(fob = c(T, T, T, F, F, F)) %>% 
+  ggplot(aes(y=percents, x=migrations, fill = migrations)) + 
+  geom_bar(position="fill", stat="identity", aes(alpha=fob)) +
+  scale_fill_manual(values = colfunc(3)) + 
+  guides(fill = "none") +
+  scale_alpha_discrete(range = c(0.5, 1)) +
+  labs(x = "Migrations", y = "Percentage of falls", alpha = "Followed by \nflapping")
+# dev.off()
+
+build %>%
+  filter(season == "fall") %>% 
+  drop_na(behavior) %>% 
+  group_by(location.lat) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  ggplot(aes(behavior, exit_height)) +
+  geom_violin()+
+  geom_boxplot(width = 0.33) +
+  facet_wrap(~migration)
+
+build <- build %>% 
+  left_join(classified %>% 
+              filter(paste0(individual.id, "_", burst_id) %in% build$burst_ind_ID) %>% 
+              dplyr::select(trackID, track_status) %>% 
+              group_by(trackID) %>% 
+              slice(1) %>% 
+              ungroup())%>%
+  filter(season == "fall") %>% 
+  drop_na(behavior) %>% 
+  group_by(location.lat) %>% 
+  slice(1) %>% 
+  ungroup()
+table(build$behavior, build$track_status, build$journey_number)
+data4 <- table(build$behavior, build$track_status, build$journey_number) %>% 
+  as.data.frame() %>% 
+  rename(behavior = Var1, status = Var2, migration = Var3) %>% 
+  group_by(status, migration) %>% 
+  mutate(cent = 100*(Freq/sum(Freq))) %>% 
+  ungroup()
+
+# png(filename = "/home/hbronnvik/Documents/chapter2/figures/look24/acc/14_flaps_fall_percent.png",
+#     width = 11.5, height = 8.5, units = "in", res = 500)
+ggplot(data4 %>% mutate(status = ifelse(status == "complete", "Lived", "Died")), aes(migration, cent))+
+  geom_bar(aes(fill = migration, alpha = behavior), stat = "identity") +
+  geom_hline(yintercept = 90, lty = 2) +
+  scale_y_continuous(breaks = c(100, 90, 75, 50, 25, 0)) + 
+  guides(fill = "none")  +
+  scale_alpha_discrete(range = c(0.5, 1)) +
+  scale_fill_manual(values = c("#0081A7", "#FED9B7", "#f27e71")) +
+  labs(x = "Fall migration", y = "Percentage", alpha = "") +
+  facet_wrap(~status)
+# dev.off()
+
+
+# png(filename = "/home/hbronnvik/Documents/chapter2/figures/look24/acc/16_flaps_wind_pre.png",
+#     width = 11.5, height = 8.5, units = "in", res = 500)
+ggplot(build, aes(behavior, sqrt(avg_wind_speed_pre), fill = behavior)) +
+  geom_violin() +
+  geom_boxplot(width = 0.33, alpha = 0.5, fill = "white") +
+  scale_fill_manual(values = c("#334371", "#6279B8")) +
+  labs(x = "", y = "Mean wind speed before falling") +
+  facet_wrap(~migration) +
+  theme(legend.position = "none")
+# dev.off()
+# dev.off()
