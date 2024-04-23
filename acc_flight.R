@@ -1395,7 +1395,6 @@ ggplot(data4 %>% mutate(status = ifelse(status == "complete", "Lived", "Died")),
   facet_wrap(~status)
 # dev.off()
 
-
 # png(filename = "/home/hbronnvik/Documents/chapter2/figures/look24/acc/16_flaps_wind_pre.png",
 #     width = 11.5, height = 8.5, units = "in", res = 500)
 ggplot(build, aes(behavior, sqrt(avg_wind_speed_pre), fill = behavior)) +
@@ -1405,5 +1404,4 @@ ggplot(build, aes(behavior, sqrt(avg_wind_speed_pre), fill = behavior)) +
   labs(x = "", y = "Mean wind speed before falling") +
   facet_wrap(~migration) +
   theme(legend.position = "none")
-# dev.off()
 # dev.off()
