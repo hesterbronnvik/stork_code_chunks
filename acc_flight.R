@@ -161,7 +161,7 @@ flight_DBA <- lapply(flight_acc, function(acc){
     
     if(nchar(acc[x, axesCol])<3){stop("The ACC data have fewer than 3 axes.")}
     # row-by-row, turn the raw acc column into a matrix with separate columns for each axis
-    accMx <- matrix(as.integer(unlist(strsplit(as.character(acc[x, accRawCol]), " "))), ncol=3, byrow = T)
+    accMx <- matrix(as.numeric(unlist(strsplit(as.character(acc[x, accRawCol]), " "))), ncol=3, byrow = T)
     n_samples_per_axis <- nrow(accMx)
     acc_burst_duration_s <- n_samples_per_axis/acc[x, sampFreqCol]
     # calculate the vectorial dynamic body acceleration (the vectorial sum of the axes: mathematically correct)
