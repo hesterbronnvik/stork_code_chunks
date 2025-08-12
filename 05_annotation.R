@@ -15,14 +15,14 @@ ua_locs <- readRDS("/home/hbronnvik/Documents/chapter3/used_av_df_60min.rds") %>
 table(ua_locs$used)
 
 # 2. rasters prepared in 04_env_rasts.R
-lyrs <- rast("/home/hbronnvik/Documents/chapter3/env_rasts/full_terr.tif")
+lyrs <- rast("/home/hbronnvik/Documents/chapter3/filled4x.tif")
 # the ODs from stork_ods.R
-ods <-rast("/home/hbronnvik/Documents/chapter3/ctmm_ods_sum_fall1.tif")
-uds <- rast("/home/hbronnvik/Documents/chapter3/ctmm_uds_sum_fall1.tif")
-lyrs <- c(lyrs, ods, uds)
+# ods <-rast("/home/hbronnvik/Documents/chapter3/ctmm_ods_sum_fall1.tif")
+# uds <- rast("/home/hbronnvik/Documents/chapter3/ctmm_uds_sum_fall1.tif")
+# lyrs <- c(lyrs, ods, uds)
 
 # pare down and reclassify the layers
-lyrs <- lyrs[[c("DEM", "obs", "max_blh")]]
+# lyrs <- lyrs[[c("DEM", "obs", "max_blh")]]
 
 # obs <- lyrs[["obs"]]
 # obs <- classify(obs, cbind(c(-1,1,5,10), c(1,5,10,140), c(1,2,3,4)))
@@ -32,16 +32,16 @@ lyrs <- lyrs[[c("DEM", "obs", "max_blh")]]
 
 # lyrs <- c(lyrs[[c("DEM", "max_blh")]], obs)
 
-crossing_coasts <- rast("/home/hbronnvik/Documents/chapter3/barrier_mask.tif")
-filled_3x <- lapply(lyrs, function(r){
-  # fill the empty spaces with 0s 
-  r <- classify(r, cbind(NA, 0))
-  # then remove them except for sea crossing points
-  r <- mask(r, crossing_coasts)
-  return(r)
-})
-lyrs <- rast(filled_3x)
-plot(lyrs)
+# crossing_coasts <- rast("/home/hbronnvik/Documents/chapter3/barrier_mask.tif")
+# filled_3x <- lapply(lyrs, function(r){
+#   # fill the empty spaces with 0s 
+#   r <- classify(r, cbind(NA, 0))
+#   # then remove them except for sea crossing points
+#   r <- mask(r, crossing_coasts)
+#   return(r)
+# })
+# lyrs <- rast(filled_3x)
+# plot(lyrs)
 
 # 3. annotate
 ua_locs_ls <- ua_locs %>% 
@@ -58,7 +58,7 @@ ua_locs_anno <- lapply(ua_locs_ls, function(ua){
     mutate(terra::extract(lyrs, ua))
   # additions
   ua <- ua %>% 
-    mutate(obs = ifelse(obs >= 1, obs-1, obs),# remove the individual itself from each cell
+    mutate(#obs = ifelse(obs >= 1, obs-1, obs),# remove the individual itself from each cell
            # add on the long/lat again (in m) and drop geometry for file size concerns
            location.long = st_coordinates(.)[,1],
            location.lat = st_coordinates(.)[,2]) %>% 
@@ -207,6 +207,9 @@ hist(log(ua_locs$DEM+424), main = "", xlab = "log DEM")
 hist(ua_locs$step_length)
 hist(sqrt(ua_locs$step_length), main = "", xlab = "sqrt sl_")
 
+hist(ua_locs$forage)
+hist(sqrt(ua_locs$forage))
+
 # ggplot(ua_locs, aes(turning_angle, fill = as.factor(used))) +
 #   geom_density(color = "black", alpha = 0.5) +
 #   labs(x = "Turning angle (deg)", y = "Density", fill = "Use")
@@ -225,29 +228,30 @@ hist(sqrt(ua_locs$step_length), main = "", xlab = "sqrt sl_")
 
 hist(ua_locs$turning_angle)
 
-summary(ua_locs$obs)
-hist(ua_locs$obs)
-hist(1/(1+ua_locs$obs)**2, main = "", xlab = "1/obs^2")
-
-summary(ua_locs$UDs)
-hist(ua_locs$UDs)
-hist(sqrt(ua_locs$UDs))
+# summary(ua_locs$obs)
+# hist(ua_locs$obs)
+# hist(1/(1+ua_locs$obs)**2, main = "", xlab = "1/obs^2")
+# 
+# summary(ua_locs$UDs)
+# hist(ua_locs$UDs)
+# hist(sqrt(ua_locs$UDs))
 
 # transform and scale the predictors for the models
 ua_locs <- ua_locs %>% 
   mutate(sqrt_dem_z = scale(log(DEM+424))[,1], 
          # aspect_z = scale(aspect)[,1],
-         obs_num_z = scale(1/(1+obs)**2)[,1], 
+         # obs_num_z = scale(1/(1+obs)**2)[,1], 
          # ods_z = scale(ODs)[,1], 
          # sqrt_uds_z = scale(sqrt(UDs))[,1],
          # med_blh_z = scale(med_blh)[,1], 
          max_blh_z = scale(1/max_blh)[,1],
          # pnt_blh_z = scale(blh_exact)[,1],
+         foo_z = scale(forage)[,1],
          sqrt_sl_z = scale(sqrt(step_length))[,1],
-         ta_z = scale(turning_angle)[,1]) %>% 
-  rename(obs_z = obs_bin)
+         ta_z = scale(turning_angle)[,1]) #%>% 
+  # rename(obs_z = obs_bin)
 
-# saveRDS(ua_locs, file = "/home/hbronnvik/Documents/chapter3/ua_data_60min_20250804.rds")
+# saveRDS(ua_locs, file = "/home/hbronnvik/Documents/chapter3/ua_data_60min_20250812.rds")
 
 
 # get the layers as a data frame to predict on
@@ -258,14 +262,22 @@ att <- ua_locs %>%
   summarize(m_dem = mean(log(DEM+424), na.rm = T),
             sd_dem = sd(log(DEM+424), na.rm = T),
             m_blh = mean((1/max_blh), na.rm = T),
-            sd_blh = sd((1/max_blh), na.rm = T))
+            sd_blh = sd((1/max_blh), na.rm = T),
+            m_foo = mean(forage, na.rm = T),
+            sd_foo = sd(forage, na.rm = T))
 
 # scale the data
 filled_lyrs <- filled_lyrs %>% 
   mutate(sqrt_dem_z = (log(DEM+424)-att$m_dem)/att$sd_dem,
-         max_blh_z = ((1/max_blh)-att$m_blh)/att$sd_blh)
+         max_blh_z = ((1/max_blh)-att$m_blh)/att$sd_blh,
+         # obs_z = ifelse(between(obs, -1, 0), "none",
+         #                  ifelse(between(obs, 1, 4), "few",
+         #                         ifelse(between(obs, 5, 9), "some",
+         #                                ifelse(between(obs, 10, 200), "many", obs)))),
+         # obs_z = factor(obs_z, levels = c("none", "few", "some", "many")),
+         foo_z = (forage-att$m_foo)/att$sd_foo)
 
-# saveRDS(filled_lyrs, file = "/home/hbronnvik/Documents/chapter3/filled_lyrs_df.rds")
+# saveRDS(filled_lyrs, file = "/home/hbronnvik/Documents/chapter3/filled_lyrs_4x_df.rds")
 
 
 
