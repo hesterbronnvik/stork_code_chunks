@@ -3,25 +3,44 @@
 ### 2025
 ### hester.bronnvik@gmail.com
 
-library(data.table)
-library(dplyr)
-library(tibble)
-library(lubridate)
+# library(data.table)
+# library(dplyr)
+# library(tibble)
+# library(lubridate)
 
 # The approach is to use ground speed thresholds to define rapid movement
 # then, use time of the year to define season of the migration
 # if the time is unclear, add in direction
 
-# This assumes an input of clean tracks at a regular sampling rate
+# This assumes an input of clean data split into a list of individuals
 
 # required information
-# high_d_thresh <- the number of meters required to define a certain migration
+# high_d_thresh <- the number of meters required to define what is certainly migration
 # low_d_thresh <- the number of meters required to define "not sedentary"
+# g_thresh <- days between low_d_thresh days to define bursts of activity
 # fall_months <- the months that are probably post-breeding season migrations (e.g. c(8:11))
 # spring_months <- the months that are probably pre-breeding season migrations (e.g. c(1:6))
+# distance_col <- the name of the column containing distance moved by the animal per day
 
-seg_storks <- function(clean_locations, high_d_thresh, low_d_thresh, 
-         fall_months, spring_months, use_ragged = F){
+# optional information
+# visDODs is a data frame with individual ID and death date
+# if use_ragged is true, days with speeds between low_d_thresh and high_d_thresh are kept
+# if the bird died then (i.e. the reason the distance was not achieved is that the bird died)
+# and if the bird also had traveled high_d_thresh in the preceding g_thresh days
+# if use_ragged is false, low_d_thresh is used to define tracks but only high_d_thresh is maintained
+
+seg_storks <- function(clean_locations, high_d_thresh, low_d_thresh, g_thresh,
+         fall_months, spring_months, distance_col, use_ragged = F){
+  # ensure required packages are loaded
+  req_packs <- c("dplyr", "data.table", "lubridate", "tibble")
+  invisible(lapply(req_packs, function(pkg) {
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      stop(paste0("Package ", pkg, "' is required but not installed."))
+    }
+  }))
+  # symbolize the column containing daily ground speeds
+  dist_sym <- rlang::sym(distance_col)
+  
   # isolate long-distance movement and label it
   ld_locs <- lapply(1:length(clean_locations), function(i){
     # one animal
@@ -30,16 +49,16 @@ seg_storks <- function(clean_locations, high_d_thresh, low_d_thresh,
     print(paste0("Segmenting data for individual ", x$individual.id[1], ". Animal ",
                  i, " of ", length(clean_locations), "."), quote = F)
     df <- x %>% 
-      dplyr::select(individual.id, timestamp, location.lat, location.long, daily_dist, daily_direction, ground_speed_15) %>% 
+      dplyr::select(individual.id, timestamp, location.lat, location.long, !!dist_sym, daily_direction, ground_speed_15) %>% 
       # remove all days that the animal did not travel the pre-set distance
-      filter(daily_dist > low_d_thresh) %>%
+      filter(!!dist_sym > low_d_thresh) %>%
       arrange(timestamp) %>%
       mutate(# add a column to measure difference in time between consecutive points
         time_lag = as.numeric(timestamp - lag(timestamp), units = "secs"),
         # insert an enormous time lag for the first location to remove the NA
         time_lag = ifelse(is.na(time_lag), 1e5, time_lag),
         # add whether there was a gap between days of pre-set distance travel
-        new_burst = ifelse(round(time_lag) <= weeks(1), F, T),
+        new_burst = ifelse(round(time_lag) <= days(g_thresh), F, T),
         # newCluster = ifelse(round(timeLag) <= weeks(6), F, T),
         # take the cumulative sum to act as a unique ID for each burst
         cumu_check_for_burst = cumsum(new_burst),
@@ -92,7 +111,7 @@ seg_storks <- function(clean_locations, high_d_thresh, low_d_thresh,
         # identify ragged edges as bursts that do not have high speed days in them
         ragged <- class_df %>% 
           group_by(burstID) %>% 
-          mutate(high_speed = max(daily_dist > high_d_thresh)) %>%
+          mutate(high_speed = max(!!dist_sym > high_d_thresh)) %>%
           ungroup() %>% 
           filter(high_speed == F)
         # did the bird die?
@@ -143,7 +162,7 @@ seg_storks <- function(clean_locations, high_d_thresh, low_d_thresh,
       }else{
         class_df <- class_df %>% 
           group_by(burstID) %>% 
-          mutate(high_speed = max(daily_dist > high_d_thresh)) %>%
+          mutate(high_speed = max(!!dist_sym > high_d_thresh)) %>%
           ungroup() %>% 
           filter(high_speed == T)
       }
@@ -184,9 +203,9 @@ seg_storks <- function(clean_locations, high_d_thresh, low_d_thresh,
   })
 }
 
-# an example usage
-clocs <- readRDS("/home/hbronnvik/Documents/storkSSFs/clean_locations_2023-08-30.rds")
-build <- seg_storks(clocs, 70000, 40000, c(8:11), c(1:6))
-# remove empty items (birds that do not migrate)
-build <- build[lapply(build, length) > 1]
+# # an example usage
+# clocs <- readRDS("/home/hbronnvik/Documents/storkSSFs/clean_locations_2023-08-30.rds")
+# build <- seg_storks(clocs, 70000, 40000, 7, c(8:11), c(1:6), "daily_dist")
+# # remove empty items (birds that do not migrate)
+# build <- build[lapply(build, length) > 1]
 
