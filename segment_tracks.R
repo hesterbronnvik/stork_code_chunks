@@ -10,7 +10,7 @@
 
 # The approach is to use ground speed thresholds to define rapid movement
 # then, use time of the year to define season of the migration
-# if the time is unclear, add in direction
+# if the time is unclear, add in direction.
 
 # This assumes an input of clean data split into a list of individuals
 
